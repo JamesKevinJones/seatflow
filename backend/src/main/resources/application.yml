@@ -1,0 +1,77 @@
+spring:
+  application:
+    name: seatflow
+
+  datasource:
+    # 127.0.0.1, not localhost, on purpose. The WSL2 port relay binds IPv4 only,
+    # but "localhost" resolves to ::1 first on this machine, so the IPv6 attempt
+    # fails before the driver falls back. Naming the IPv4 address removes it.
+    url: ${SEATFLOW_DB_URL:jdbc:postgresql://127.0.0.1:5432/seatflow}
+    username: ${SEATFLOW_DB_USER:seatflow}
+    password: ${SEATFLOW_DB_PASSWORD:seatflow}
+    hikari:
+      # Sized for contention testing: the reservation path is short and
+      # write-heavy, so a modest pool with a hard timeout surfaces starvation
+      # rather than hiding it behind unbounded queueing.
+      maximum-pool-size: ${SEATFLOW_DB_POOL_MAX:20}
+      minimum-idle: 5
+      connection-timeout: 3000
+
+  jpa:
+    hibernate:
+      # Flyway owns the schema. Hibernate only checks that entities match it.
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+
+  data:
+    redis:
+      host: ${SEATFLOW_REDIS_HOST:127.0.0.1}
+      port: ${SEATFLOW_REDIS_PORT:6379}
+      timeout: 2s
+
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: ${SEATFLOW_PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+seatflow:
+  security:
+    jwt:
+      # HMAC-SHA256. Issuer and resource server are the same application, so a
+      # symmetric key is appropriate. Split the auth service out and this must
+      # become an RSA keypair. Override in every environment.
+      secret: ${SEATFLOW_JWT_SECRET:}
+      issuer: seatflow
+      access-token-ttl: 15m
+      refresh-token-ttl: 30d
+
+logging:
+  level:
+    com.seatflow: INFO

@@ -1,0 +1,19 @@
+# Test profile. Layered on top of application.yml, not a replacement for it.
+#
+# Datasource and Redis settings are absent on purpose: Testcontainers supplies
+# them at runtime through @ServiceConnection.
+
+seatflow:
+  security:
+    jwt:
+      # Fixed so token assertions are reproducible across runs.
+      secret: test-profile-signing-key-not-used-outside-the-test-suite-0123456789
+      access-token-ttl: 5m
+      refresh-token-ttl: 1d
+
+logging:
+  level:
+    com.seatflow: DEBUG
+    org.testcontainers: INFO
+    # Testcontainers is chatty about image pulls on a cold cache.
+    tc: INFO

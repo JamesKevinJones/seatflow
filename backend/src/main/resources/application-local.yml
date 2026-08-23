@@ -1,0 +1,31 @@
+# Local development profile. Never used outside a developer machine.
+#
+# Activate with:  ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+# Infrastructure comes from infra/docker-compose.dev.yml, running in WSL.
+
+spring:
+  jpa:
+    properties:
+      hibernate:
+        format_sql: true
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+seatflow:
+  security:
+    jwt:
+      # Development-only key. Long enough for HMAC-SHA256 (needs >= 256 bits).
+      # Production reads SEATFLOW_JWT_SECRET from the environment; this default
+      # exists so a fresh clone runs without setup. It is not a secret.
+      secret: local-development-only-signing-key-do-not-use-anywhere-else-0123456789
+
+logging:
+  level:
+    com.seatflow: DEBUG
+    org.springframework.security: DEBUG
+    # Uncomment to see the SQL behind the reservation path.
+    # org.hibernate.SQL: DEBUG
+    # org.hibernate.orm.jdbc.bind: TRACE

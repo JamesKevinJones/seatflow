@@ -5,6 +5,89 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-23 - WSL must be held open with a keep-alive during development
+
+**Context.** The WSL VM terminates within seconds of the last command exiting.
+Every `wsl -e ...` invocation was booting a fresh VM, restarting the containers,
+and then shutting down again - so by the time Maven had compiled and Spring was
+starting, PostgreSQL was already gone. This presented as an intermittent
+"Connection refused" that looked like a port-forwarding bug for some time.
+
+**Decision.** Hold a long-lived process open in WSL for the duration of a dev
+session: `wsl -e bash -lc "sleep infinity"`, backgrounded. Containers then stay
+up and the ports stay forwarded.
+
+**Why not the alternative.** Setting `vmIdleTimeout` in `.wslconfig` is a global
+change affecting all of Kevin's WSL usage, including an unrelated n8n container.
+The keep-alive is scoped to the session and needs no config change.
+
+**Consequences.** VERIFY.md step 1 starts the keep-alive. A "Connection refused"
+from the app almost always means the keep-alive died, not that the config is
+wrong - check `wsl -l -v` for STATE=Running before debugging anything else.
+
+---
+
+## 2026-08-23 - Datasource host is 127.0.0.1, not localhost
+
+**Context.** The WSL2 port relay binds IPv4 only. On this machine `localhost`
+resolves to `::1` first, so the JDBC driver's first connection attempt goes to an
+address nothing is listening on.
+
+**Decision.** `application.yml` defaults to `jdbc:postgresql://127.0.0.1:5432/...`
+and Redis host `127.0.0.1`.
+
+**Why not the alternative.** Relying on the driver's IPv6-to-IPv4 fallback works
+most of the time, which is worse than failing predictably - it produces
+intermittent startup failures that look like flaky infrastructure.
+
+**Consequences.** Both are environment-overridable for Docker deployment, where
+service names replace the literal address.
+
+---
+
+## 2026-08-23 - Refresh-token reuse detection uses noRollbackFor
+
+**Context.** The reuse branch revokes every live token for the user and then
+throws to reject the request. Under a plain `@Transactional`, the throw rolled
+the revocation back, so a replayed token left the whole family usable - the exact
+opposite of the check's purpose. Caught by end-to-end verification, not by
+reading the code.
+
+**Decision.** `@Transactional(noRollbackFor = AuthExceptions.InvalidRefreshToken.class)`
+on `AuthService.refresh`, so the revocation commits while the caller still gets a
+401.
+
+**Why not the alternative.** `Propagation.REQUIRES_NEW` on an extracted bean also
+works and is arguably more explicit, but it needs a second bean to avoid
+self-invocation bypassing the proxy. For a single write in one branch,
+`noRollbackFor` is the smaller change.
+
+**Consequences.** Any future write in `refresh` that *should* roll back on that
+exception now will not. If one appears, move the revocation into its own
+`REQUIRES_NEW` bean instead.
+
+---
+
+## 2026-08-23 - Spring Boot 4.1.1, superseding the 3.x in the original brief
+
+**Context.** The brief specified Spring Boot 3.x. Spring Initializr rejects every
+3.x version with HTTP 400; only 4.x is served. 3.5.3 remains on Maven Central but
+its OSS support window has closed.
+
+**Decision.** Spring Boot 4.1.1 on Spring Framework 7. Kevin chose this over
+hand-pinning an EOL 3.5.3.
+
+**Why not the alternative.** Shipping a 2026 portfolio project on an
+out-of-support framework invites the question "why?" in exactly the conversation
+the project exists to win.
+
+**Consequences.** Boot 4 renamed starters and moved to Jackson 3
+(`tools.jackson.databind`). Boot 3 snippets from training data or blog posts will
+not compile unmodified - check imports against the actual classpath rather than
+recalling them.
+
+---
+
 ## 2026-08-23 - Reservation has four states, not five
 
 **Context.** The original brief listed PENDING, ACTIVE, EXPIRED, CANCELLED,

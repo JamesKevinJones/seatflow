@@ -22,7 +22,11 @@ document in this repo.
 Pinned, because a wrong guess here breaks the build.
 
 - **Java 21** (Temurin 21.0.12.1 LTS at `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot`)
-- **Spring Boot 3.x** — Web, Data JPA, Security, Validation, WebSocket, Actuator
+- **Spring Boot 4.1.1** on Spring Framework 7 / Spring Security 7 — Initializr no
+  longer serves 3.x. Boot 4 renamed starters (`-webmvc`, not `-web`;
+  `-security-oauth2-resource-server`; per-slice `*-test` starters) and ships
+  **Jackson 3** (`tools.jackson.databind`, not `com.fasterxml.jackson.databind`).
+  Do not copy Boot 3 snippets without checking imports.
 - **PostgreSQL 16** — the single source of truth for booking integrity
 - **Flyway** — all schema changes; `ddl-auto` is `validate`, never `update`
 - **Redis 7** — cache and coordination only, never an arbiter of correctness
