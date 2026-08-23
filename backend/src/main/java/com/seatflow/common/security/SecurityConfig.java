@@ -62,6 +62,10 @@ public class SecurityConfig {
                                 "/api/v1/auth/register",
                                 "/api/v1/auth/login",
                                 "/api/v1/auth/refresh").permitAll()
+                        // The public catalogue. Browsing events and seat maps
+                        // needs no account; only reserving one does. Writes to
+                        // /api/v1/admin/** are not matched here and stay locked.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/events", "/api/v1/events/**").permitAll()
                         // Liveness and readiness are consumed by orchestrators.
                         .requestMatchers("/actuator/health/**").permitAll()
                         .requestMatchers("/actuator/**").hasRole("ADMIN")

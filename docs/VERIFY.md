@@ -76,18 +76,32 @@ Testcontainers needs a Docker daemon. Docker Desktop is disabled on this machine
 so **the Windows JVM cannot reach one** - `./mvnw test` from Windows fails with
 "Could not find a valid Docker environment". This is expected, not a regression.
 
-Run the suite inside WSL, which has its own Temurin 21 and a working daemon:
+**Use `verify`, not `test`.** Integration tests are named `*IT` and run under
+Failsafe in the `integration-test` phase. Surefire (`mvn test`) only matches
+`*Test` / `*Tests`, so `mvn test` silently skips every `*IT` class and still
+reports BUILD SUCCESS. A green `mvn test` proves nothing about the concurrency
+guarantees, because those tests are all `*IT`.
 
 ```bash
-wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw test"
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw verify"
 ```
 
 WSL keeps a separate `~/.m2`, so the first run re-downloads dependencies.
 
+Current expected output: **3 tests under surefire, 5 under failsafe, 0 failures.**
+If failsafe reports 0 tests run, the plugin configuration has been lost - treat
+that as a build failure, not a pass.
+
+A single integration test:
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw verify -Dit.test=EventSeatGenerationIT"
+```
+
 The one that will matter most, from Phase 3:
 
 ```bash
-wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw test -Dtest=ConcurrentReservationIT"
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw verify -Dit.test=ConcurrentReservationIT"
 ```
 
 Expected: 200 threads contend for one seat, exactly 1 succeeds, 199 fail with
@@ -112,10 +126,12 @@ Expect `{"status":"UP"}` with `db` and `redis` components also UP.
 
 ---
 
-## 5. Auth end-to-end
+## 5. End-to-end API suites
 
-`scripts/verify-auth.sh` exercises every auth path against a running app and
-prints a pass/fail table:
+Both run against a running app and print a pass/fail table. Both are
+re-runnable: they generate unique emails and venue names per run, because
+`uq_users_email_lower` and `uq_venues_name_city` would otherwise reject a second
+pass.
 
 ```bash
 bash scripts/verify-auth.sh
@@ -127,6 +143,18 @@ bearer-token access, missing-token rejection, refresh rotation, refresh replay
 detection, family revocation after replay, and role-gated actuator access.
 
 All 15 checks must pass. Last full run: 15 passed, 0 failed.
+
+```bash
+bash scripts/verify-catalog.sh
+```
+
+Covers: admin login, venue creation with generated layout, admin-only
+enforcement (403 for USER, 401 unauthenticated), layout validation, event
+creation with EventSeat generation, slug collision handling, draft events hidden
+from the public (404, not 403), publish, the public catalogue and seat map,
+per-section price overrides, and cancel.
+
+All 29 checks must pass. Last full run: 29 passed, 0 failed.
 
 ---
 

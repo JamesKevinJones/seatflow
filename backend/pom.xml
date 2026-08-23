@@ -136,6 +136,28 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
+			<!--
+				Integration tests are named *IT and run under `mvn verify`, not
+				`mvn test`. Surefire only matches *Test / *Tests, so without this
+				plugin every *IT class is silently skipped - which looks exactly
+				like a passing build. That matters here because the tests that
+				prove the concurrency guarantees are all *IT.
+
+				They also need a Docker daemon for Testcontainers, so on this
+				machine `verify` must run inside WSL. See docs/VERIFY.md.
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<executions>
+					<execution>
+						<goals>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>

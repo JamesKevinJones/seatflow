@@ -15,8 +15,9 @@ import org.testcontainers.utility.DockerImageName;
  * row-lock and predicate re-check behaviour, so testing against a different
  * version - or against H2 - would prove nothing about what actually ships.
  */
+// Public so test classes in other packages can import it.
 @TestConfiguration(proxyBeanMethods = false)
-class TestcontainersConfiguration {
+public class TestcontainersConfiguration {
 
     // PostgreSQLContainer is not generic in this Testcontainers version.
     @Bean

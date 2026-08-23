@@ -5,6 +5,70 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-23 - Integration tests are *IT and run under Failsafe
+
+**Context.** `EventSeatGenerationIT` was written, compiled, and reported nothing.
+Surefire's default includes are `*Test`, `Test*`, `*Tests`, `*TestCase` - not
+`*IT`. `mvn test` skipped the entire class and still printed BUILD SUCCESS.
+
+**Decision.** Added `maven-failsafe-plugin`. Integration tests are named `*IT`
+and run in the `integration-test` phase; the proof command is `mvn verify`, never
+`mvn test`.
+
+**Why not the alternative.** Renaming them to `*Tests` so Surefire picks them up
+would work, but it merges fast unit tests with slow Docker-dependent ones, so
+there is no longer a quick check that runs without a daemon.
+
+**Consequences.** A green `mvn test` proves nothing about concurrency, because
+those tests are all `*IT`. VERIFY.md states the expected per-plugin test counts,
+so "failsafe ran 0 tests" reads as a failure rather than a pass.
+
+---
+
+## 2026-08-23 - Method-security denials need their own exception handler
+
+**Context.** A USER calling an admin endpoint got 500 instead of 403.
+`@PreAuthorize` throws `AuthorizationDeniedException` *inside* the controller
+invocation, so `@RestControllerAdvice` sees it before Spring Security's
+`ExceptionTranslationFilter` does, and the catch-all `@ExceptionHandler(Exception)`
+turned it into an internal error.
+
+**Decision.** An explicit `@ExceptionHandler(AccessDeniedException.class)`
+returning 403. Filter-level rejections still go through
+`ProblemDetailAccessDeniedHandler`.
+
+**Why not the alternative.** Dropping the catch-all handler would fix the
+symptom but let genuine internal errors leak stack traces to clients.
+
+**Consequences.** There are now two paths to a 403 - method security via the
+advice, and filter security via the handler - which both emit the same problem
+type. Any future catch-all advice must keep this ordering in mind.
+
+---
+
+## 2026-08-23 - Admin bootstrap is config-driven and idempotent
+
+**Context.** Registration only ever grants USER, so a fresh database had no way
+to reach an admin endpoint. Kevin chose config-driven creation over a seeded
+migration or manual SQL.
+
+**Decision.** `AdminBootstrapRunner` reads `seatflow.admin.*` at startup:
+creates the account if missing, grants ADMIN if the account exists without it,
+does nothing if it already has it. An existing password is never overwritten.
+Blank credentials disable it entirely.
+
+**Why not the alternative.** A seed migration would put credentials in version
+control permanently and ship them to every environment that runs migrations.
+Manual SQL cannot be automated in tests and has to be repeated every time the
+database is recreated.
+
+**Consequences.** The local profile carries working dev credentials so a fresh
+clone runs with no setup; real environments must set SEATFLOW_ADMIN_EMAIL and
+SEATFLOW_ADMIN_PASSWORD. The promotion path also means an existing user can be
+made admin by configuration alone.
+
+---
+
 ## 2026-08-23 - WSL must be held open with a keep-alive during development
 
 **Context.** The WSL VM terminates within seconds of the last command exiting.

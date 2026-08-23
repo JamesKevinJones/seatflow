@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -77,6 +78,35 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setProperty("errors", errors);
 
         return ResponseEntity.status(code.status()).body(problem);
+    }
+
+    /**
+     * Authorization failures raised by method security, such as a
+     * {@code @PreAuthorize} that did not match.
+     * <p>
+     * This handler is not optional. Method security throws
+     * {@code AuthorizationDeniedException} <em>inside</em> the controller
+     * invocation, so it reaches this advice before Spring Security's
+     * {@code ExceptionTranslationFilter} ever sees it. Without an explicit
+     * handler the catch-all below turns every legitimate 403 into a 500 - which
+     * both misreports the failure and leaks that something broke rather than
+     * that access was refused.
+     * <p>
+     * Filter-level rejections still go to
+     * {@link com.seatflow.common.security.ProblemDetailAccessDeniedHandler}.
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ProblemDetail handleAccessDenied(AccessDeniedException ex, HttpServletRequest request) {
+        ErrorCode code = ErrorCode.ACCESS_DENIED;
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                code.status(), "You do not have permission to perform this action.");
+        problem.setType(code.type());
+        problem.setTitle(code.title());
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", Instant.now());
+
+        log.debug("Access denied on {} {}", request.getMethod(), request.getRequestURI());
+        return problem;
     }
 
     /**

@@ -62,6 +62,16 @@ management:
         enabled: true
 
 seatflow:
+  # Bootstrap administrator. Registration only ever grants USER, so without this
+  # a fresh database has no way to reach an admin endpoint. Creates the account
+  # if absent, grants ADMIN if the account exists without it, and never
+  # overwrites an existing password. Blank credentials disable it.
+  admin:
+    enabled: ${SEATFLOW_ADMIN_ENABLED:true}
+    email: ${SEATFLOW_ADMIN_EMAIL:}
+    password: ${SEATFLOW_ADMIN_PASSWORD:}
+    full-name: ${SEATFLOW_ADMIN_NAME:SeatFlow Administrator}
+
   security:
     jwt:
       # HMAC-SHA256. Issuer and resource server are the same application, so a

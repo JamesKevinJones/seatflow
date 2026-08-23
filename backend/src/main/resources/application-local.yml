@@ -15,6 +15,14 @@ management:
       show-details: always
 
 seatflow:
+  # Development administrator, so a fresh clone can reach admin endpoints with no
+  # setup. Local profile only. Real environments supply their own via
+  # SEATFLOW_ADMIN_EMAIL / SEATFLOW_ADMIN_PASSWORD.
+  admin:
+    email: admin@seatflow.local
+    password: local-admin-password-change-me
+    full-name: Local Administrator
+
   security:
     jwt:
       # Development-only key. Long enough for HMAC-SHA256 (needs >= 256 bits).
