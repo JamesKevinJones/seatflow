@@ -4,6 +4,7 @@ import com.seatflow.common.exception.ApiException;
 import com.seatflow.common.exception.ErrorCode;
 import com.seatflow.event.domain.Event;
 import com.seatflow.event.domain.EventSeat;
+import com.seatflow.event.domain.EventSeatStatus;
 import com.seatflow.event.infrastructure.EventRepository;
 import com.seatflow.event.infrastructure.EventSeatRepository;
 import com.seatflow.event.presentation.dto.EventDtos.SeatMapResponse;
@@ -13,6 +14,7 @@ import com.seatflow.venue.domain.VenueSection;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,6 +67,10 @@ public class SeatMapService {
         // Single query, with seat and section join-fetched.
         List<EventSeat> eventSeats = eventSeatRepository.findSeatMap(eventId);
 
+        // One timestamp for the whole map, so two seats whose holds lapse
+        // milliseconds apart do not render inconsistently within one response.
+        Instant now = Instant.now();
+
         Map<UUID, List<SeatMapSeat>> seatsBySection = new LinkedHashMap<>();
         Map<UUID, VenueSection> sectionsById = new LinkedHashMap<>();
 
@@ -73,7 +79,7 @@ public class SeatMapService {
             sectionsById.putIfAbsent(section.getId(), section);
             seatsBySection
                     .computeIfAbsent(section.getId(), key -> new ArrayList<>())
-                    .add(toSeat(eventSeat));
+                    .add(toSeat(eventSeat, now));
         }
 
         List<SeatMapSection> sections = sectionsById.values().stream()
@@ -91,8 +97,17 @@ public class SeatMapService {
                 sections);
     }
 
-    private SeatMapSeat toSeat(EventSeat eventSeat) {
+    private SeatMapSeat toSeat(EventSeat eventSeat, Instant now) {
         var seat = eventSeat.getSeat();
+
+        // A hold that has lapsed is reported as free, because the reservation
+        // endpoint will treat it as free. Showing the stored RESERVED until the
+        // sweeper catches up would make the map disagree with what actually
+        // happens when the seat is clicked.
+        String status = eventSeat.isClaimable(now)
+                ? EventSeatStatus.AVAILABLE.name()
+                : eventSeat.getStatus().name();
+
         return new SeatMapSeat(
                 // The EventSeat id, not the physical seat id. This is what a
                 // reservation request sends.
@@ -100,7 +115,7 @@ public class SeatMapService {
                 seat.getRowLabel(),
                 seat.getSeatNumber(),
                 seat.label(),
-                eventSeat.getStatus().name(),
+                status,
                 eventSeat.getPriceCents(),
                 seat.getPositionX(),
                 seat.getPositionY());

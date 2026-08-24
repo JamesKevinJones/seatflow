@@ -18,6 +18,16 @@ public enum ErrorCode {
     INVALID_REFRESH_TOKEN("invalid-refresh-token", "Invalid refresh token", HttpStatus.UNAUTHORIZED),
     ACCOUNT_DISABLED("account-disabled", "Account disabled", HttpStatus.FORBIDDEN),
 
+    // Reservations
+    /**
+     * At least one requested seat was taken by someone else. The response
+     * carries an {@code unavailableSeatIds} extension so the client can
+     * re-render the map instead of discarding the whole selection.
+     */
+    SEAT_UNAVAILABLE("seat-unavailable", "Seat unavailable", HttpStatus.CONFLICT),
+    RESERVATION_EXPIRED("reservation-expired", "Reservation expired", HttpStatus.UNPROCESSABLE_ENTITY),
+    EVENT_NOT_ON_SALE("event-not-on-sale", "Event not on sale", HttpStatus.CONFLICT),
+
     // Generic
     VALIDATION_FAILED("validation-failed", "Validation failed", HttpStatus.BAD_REQUEST),
     RESOURCE_NOT_FOUND("resource-not-found", "Resource not found", HttpStatus.NOT_FOUND),

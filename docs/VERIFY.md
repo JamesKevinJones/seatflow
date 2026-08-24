@@ -88,7 +88,7 @@ wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw 
 
 WSL keeps a separate `~/.m2`, so the first run re-downloads dependencies.
 
-Current expected output: **3 tests under surefire, 5 under failsafe, 0 failures.**
+Current expected output: **3 tests under surefire, 9 under failsafe, 0 failures.**
 If failsafe reports 0 tests run, the plugin configuration has been lost - treat
 that as a build failure, not a pass.
 
@@ -98,15 +98,26 @@ A single integration test:
 wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw verify -Dit.test=EventSeatGenerationIT"
 ```
 
-The one that will matter most, from Phase 3:
+The one that matters most:
 
 ```bash
 wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw verify -Dit.test=ConcurrentReservationIT"
 ```
 
-Expected: 200 threads contend for one seat, exactly 1 succeeds, 199 fail with
-`SeatsUnavailableException`, and the database holds exactly one RESERVED row.
-Any other count is a correctness failure, not a flaky test.
+Four tests, all against real PostgreSQL under READ COMMITTED:
+
+1. 200 threads reach for one seat - exactly 1 succeeds, 199 fail with
+   `SeatsUnavailableException`, and the database holds exactly one RESERVED row.
+2. 200 threads across 10 seats - exactly 10 held, and no seat appears in two
+   live reservations.
+3. Two overlapping multi-seat requests - exactly one wins, and both its seats
+   belong to the same reservation. A partial hold would show two holders.
+4. A lapsed hold is reclaimable **with the sweeper disabled**, proving expiry
+   correctness comes from the query predicate rather than the scheduled job.
+
+Any other count is a correctness failure, not a flaky test. If this test ever
+needs the sweeper enabled to pass, the separation described in
+`docs/CONCURRENCY.md` has been broken.
 
 ---
 
@@ -155,6 +166,20 @@ from the public (404, not 403), publish, the public catalogue and seat map,
 per-section price overrides, and cancel.
 
 All 29 checks must pass. Last full run: 29 passed, 0 failed.
+
+```bash
+bash scripts/verify-reservations.sh
+```
+
+Covers: authentication required to hold, a successful multi-seat hold with a
+correct total and expiry, the seat map reflecting the hold, a conflicting
+request rejected with 409 naming exactly the lost seat, all-or-nothing (the
+loser's other seat stays free), idempotent replay returning the same
+reservation without taking more seats, ownership privacy (404, not 403),
+validation, release returning seats to the pool, and a released seat being
+takeable by someone else.
+
+All 21 checks must pass. Last full run: 21 passed, 0 failed.
 
 ---
 

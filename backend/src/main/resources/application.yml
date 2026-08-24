@@ -62,6 +62,13 @@ management:
         enabled: true
 
 seatflow:
+  reservation:
+    # How often lapsed holds are returned to the pool, and how long to wait
+    # before the first sweep. This job keeps the seat map honest; it is not what
+    # makes reservations correct - the hold query already ignores lapsed holds.
+    sweep-interval-ms: ${SEATFLOW_SWEEP_INTERVAL_MS:10000}
+    sweep-initial-delay-ms: ${SEATFLOW_SWEEP_INITIAL_DELAY_MS:15000}
+
   # Bootstrap administrator. Registration only ever grants USER, so without this
   # a fresh database has no way to reach an admin endpoint. Creates the account
   # if absent, grants ADMIN if the account exists without it, and never

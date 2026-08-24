@@ -226,8 +226,10 @@ public class EventService {
         long reserved = 0;
         long booked = 0;
 
+        // Native query, so the status arrives as text. Lapsed holds already
+        // count as AVAILABLE - see the query.
         for (Object[] row : eventSeatRepository.countByStatus(eventId)) {
-            EventSeatStatus status = (EventSeatStatus) row[0];
+            EventSeatStatus status = EventSeatStatus.valueOf((String) row[0]);
             long count = ((Number) row[1]).longValue();
             switch (status) {
                 case AVAILABLE -> available = count;

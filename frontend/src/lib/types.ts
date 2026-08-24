@@ -102,12 +102,18 @@ export interface Page<T> {
   last: boolean
 }
 
-/** Phase 3. The endpoint does not exist yet; the shape is from the design. */
+export interface ReservedSeat {
+  eventSeatId: string
+  priceCents: number
+}
+
 export interface ReservationResponse {
   id: string
   eventId: string
-  status: string
+  status: 'ACTIVE' | 'EXPIRED' | 'CANCELLED' | 'COMPLETED'
+  /** Absolute, so the countdown does not drift with request latency. */
   expiresAt: string
-  seatIds: string[]
+  secondsRemaining: number
   totalCents: number
+  seats: ReservedSeat[]
 }

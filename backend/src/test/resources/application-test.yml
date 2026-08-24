@@ -3,7 +3,25 @@
 # Datasource and Redis settings are absent on purpose: Testcontainers supplies
 # them at runtime through @ServiceConnection.
 
+spring:
+  datasource:
+    hikari:
+      # The concurrency test fires 200 simultaneous reservations. With the
+      # production pool of 20 they would queue behind each other and some would
+      # hit the 3s connection timeout, which would surface as a failure that has
+      # nothing to do with seat arbitration. A wider pool and a patient timeout
+      # keep the test measuring what it claims to measure.
+      maximum-pool-size: 40
+      connection-timeout: 20000
+
 seatflow:
+  reservation:
+    # The sweeper must not run during tests: it would release lapsed holds
+    # behind the assertions that check lapsed holds are still claimable.
+    # Tests exercise expiry directly instead.
+    sweep-initial-delay-ms: 86400000
+    sweep-interval-ms: 86400000
+
   security:
     jwt:
       # Fixed so token assertions are reproducible across runs.

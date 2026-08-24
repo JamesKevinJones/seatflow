@@ -49,12 +49,10 @@ export function useSeatMap(eventId: string) {
 }
 
 /**
- * Reserve seats.
+ * Holds seats, or fails having held none.
  *
- * The endpoint is Phase 3 and does not exist yet, so this currently fails with
- * a 404. The request shape is the one from the Phase 0 design, so it starts
- * working the moment the backend lands - and until then the UI shows the real
- * error rather than pretending the hold succeeded.
+ * A 409 carries `unavailableSeatIds`, naming the seats lost to someone else so
+ * the map can grey them out and keep the rest of the selection.
  */
 export function useReserveSeats(eventId: string) {
   const queryClient = useQueryClient()
@@ -65,11 +63,30 @@ export function useReserveSeats(eventId: string) {
         method: 'POST',
         auth: true,
         body: { eventId, seatIds },
-        // Makes an accidental double-submit return the same reservation
-        // instead of creating a second one.
+        // One key per attempt. A retry of *this* request returns the same
+        // reservation instead of taking a second set of seats.
         headers: { 'Idempotency-Key': crypto.randomUUID() },
       }),
-    onSuccess: () => {
+    onSettled: () => {
+      // Refetch on failure too: a conflict means the map is out of date, and
+      // that is exactly when the user needs to see the truth.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.seatMap(eventId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.event(eventId) })
+    },
+  })
+}
+
+/** Releases a hold early, returning the seats to the pool. */
+export function useCancelReservation(eventId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (reservationId: string) =>
+      request<ReservationResponse>(`/v1/reservations/${reservationId}`, {
+        method: 'DELETE',
+        auth: true,
+      }),
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.seatMap(eventId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.event(eventId) })
     },

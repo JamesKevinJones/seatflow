@@ -3,74 +3,66 @@
 > Updated at the end of every session, by whichever agent was driving.
 > Keep it under a page. This is a baton, not a diary.
 
-**Last updated:** 2026-08-24 by claude-code
+**Last updated:** 2026-08-25 by claude-code
 
 ## Where things stand
 
-**Phase 4 complete, apart from the hold itself. Phase 3 was skipped and is now
-the gap in the middle of the product.**
+**Phase 3 complete. The reservation engine works, and the guarantee it exists
+for is proven under real contention.**
 
-End to end today: browse published events, open one, see real availability
+End to end today: browse published events, open one, see live availability
 including how many seats other people are holding, open the seat map, pick up to
-eight seats with a running total, register or sign in, and press "Hold these
-seats" - which fails with a plain message, because `POST /api/v1/reservations`
-does not exist yet.
+eight seats, sign in, hold them, watch a ten-minute countdown, and release them
+early. If someone takes one of your seats between choosing and holding, the
+whole hold is refused, the response names exactly which seat was lost, and the
+interface drops that one while keeping the rest of the selection.
 
 Proof, all actually run:
 
-- `npm run build` - clean (`tsc -b` + vite, 90 kB gzipped JS)
-- Backend `./mvnw verify` in WSL: 3 surefire + 5 failsafe, 0 failures
-- `scripts/verify-auth.sh` 15 passed, `scripts/verify-catalog.sh` 29 passed
-- Browser: 188 seats render with counts matching the database exactly
-  (143 available / 19 held / 26 sold), sold seats disabled, selection cap works,
-  sign-in flow works, deep links work, no console errors, no horizontal overflow
-  at 375px or 1330px
+- `./mvnw verify` in WSL: **3 surefire + 9 failsafe, 0 failures**
+- `ConcurrentReservationIT`: 200 threads on one seat, exactly one winner; 200
+  across ten seats, exactly ten held and none held twice; overlapping multi-seat
+  requests all-or-nothing; lapsed holds reclaimable with the sweeper disabled
+- `scripts/verify-reservations.sh` **21 passed**, `verify-catalog.sh` **29
+  passed**, `verify-auth.sh` **15 passed**
+- Browser: hold two seats (map 146/16 to 144/18), countdown ticks, release
+  restores 146/16; a seat stolen mid-selection produces "1 of 2 requested seats
+  are no longer available" and is greyed out while the other stays selected
 
 ## In progress
 
-Nothing half-done. Phase 4 finished at a clean boundary.
+Nothing half-done. Phase 3 finished at a clean boundary.
 
 ## The exact next step
 
-**Phase 3, the reservation engine.** It is now the only thing between this and a
-working product, and it is the phase the project exists for.
+Phases 5 to 8 are all open. In rough order of value:
 
-Read `docs/CONCURRENCY.md` first - the design is already argued out.
-
-1. `V4__reservations.sql` - `reservations`, `reservation_seats`, and the
-   `ALTER TABLE event_seats ADD CONSTRAINT fk_event_seats_held_by` that V3 left out.
-2. `SeatAllocationPort` in the `event` module (`tryHold` / `release` / `confirm`).
-3. The atomic conditional UPDATE, per CONCURRENCY.md Layer 1. Native query,
-   `@Modifying(clearAutomatically = true, flushAutomatically = true)`, `status`
-   in the WHERE clause, seat ids sorted before binding.
-4. `ReservationService`: one transaction, compare affected rows to requested
-   count, throw and roll back everything if they differ.
-5. `POST /api/v1/reservations` accepting `{eventId, seatIds[]}` and the
-   `Idempotency-Key` header - **the frontend already sends exactly this**. A 409
-   must carry `unavailableSeatIds`; the seat tray already reads that field.
-6. Expiry: lazy predicate for correctness, `@Scheduled` sweeper under
-   `pg_try_advisory_lock` for UX.
-7. **`ConcurrentReservationIT`** - 200 threads, one winner, 199 failures, exactly
-   one RESERVED row. Not `@Transactional`. Named `*IT` so failsafe runs it.
-
-When it lands, delete the 404-specific copy in `SeatSelection.tsx` and
-`scripts/seed-demo.sh` (which fakes held/sold states by writing them directly).
+- **Phase 7 (payment and booking)** is the biggest functional gap - the hold
+  currently expires and nothing can be bought. `SeatAllocationPort` needs its
+  third method, `confirm(reservationId, bookingId)`, plus `V5__bookings_payments.sql`
+  with the `uq_booking_seat_once` index that makes double-selling structurally
+  impossible, and the `booking_id` foreign key V3 deferred.
+- **Phase 6 (WebSockets)** would remove the need to refresh the seat map by
+  hand. Broadcast only from `@TransactionalEventListener(AFTER_COMMIT)`.
+- **Phase 9 (load testing)** would put real numbers behind the concurrency work,
+  which is what a reader will want to see.
+- **Phase 5 (Redis)** is the least urgent: nothing is slow yet, and the caching
+  story is only interesting once there is traffic to cache.
 
 ## Open questions
 
-- **CORS is still not configured**, and the Vite dev proxy hides that. Any real
-  deployment with frontend and backend on different origins needs it.
-- **Deployment.** Vercel suits the frontend but cannot host Spring Boot; the
-  backend needs a container host plus managed Postgres and Redis. Deferred to
-  Phase 10, and pointless before Phase 3 exists.
-- **Event detail shows no price.** `EventResponse` carries availability but no
-  price range. Either add one to the DTO or leave price to the seat map.
-- **Seat map payload.** 188 seats is fine; a 2,000 seat venue returns 2,000
-  objects per page view. Phase 5 caching, not pagination.
-- **PENDING reservation status** was dropped to four states (see DECISIONS).
-  Phase 3 is where that becomes concrete.
-- **Token storage** is localStorage. The right answer is an httpOnly cookie for
-  the refresh token, which needs a backend change.
+- **Nothing can be bought.** Holds expire and the seats return. That is correct
+  behaviour for Phase 3 but it is not a product yet.
+- **CORS is still not configured**; the Vite dev proxy hides it.
+- **Deployment.** Vercel suits the frontend but cannot host Spring Boot - the
+  backend needs a container host plus managed Postgres and Redis. Free tiers
+  sleep, which makes a shared link cold-start or fail.
+- **`scripts/seed-demo.sh` still writes BOOKED seats directly**, because
+  bookings do not exist. Replace that part when Phase 7 lands.
+- **Event detail shows no price** - `EventResponse` carries availability but no
+  price range.
+- **Token storage** is localStorage; an httpOnly refresh cookie needs a backend
+  change.
 
 ## Known traps
 
@@ -78,30 +70,29 @@ Ordered by how much time they cost.
 
 - **WSL terminates seconds after the last command exits**, taking PostgreSQL and
   Redis with it. Start `wsl -e bash -lc "sleep infinity" &` first. "Connection
-  refused" almost always means this - check `wsl -l -v` before debugging.
-- **CSS transitions freeze when the Browser pane is not displayed**, so
+  refused" almost always means this.
+- **CSS transitions freeze when the Browser pane is hidden**, so
   `getBoundingClientRect` returns mid-transition values. Inject
-  `*{transition:none !important}` before measuring layout, or you will "fix" a
-  bug that is not there. This cost real time in Phase 4.
+  `*{transition:none !important}` before measuring layout.
+- **Sizing a concurrency-test thread pool below the task count deadlocks the
+  build.** Running workers block on the start gate, queued tasks never reach
+  `ready.countDown()`, and `ExecutorService.close()` waits forever. One thread
+  per caller.
 - **`mvn test` silently skips every `*IT`** and still prints BUILD SUCCESS. Use
-  `mvn verify`. Expected: 3 surefire, 5 failsafe.
-- **`./mvnw verify` fails from Windows** at Docker discovery, by design. Run it
-  inside WSL.
-- **`npm --prefix <path> run dev`**, not `npm run dev --prefix <path>` - the
-  latter passes the flag to Vite.
-- **`.claude/launch.json` must use the 8.3 short path**; the launcher cannot pass
-  a path with a space. That is also why `server.fs.strict` is off.
-- **The dev server restarts when `vite.config.ts` changes**, so a reload issued
-  at that moment lands on a browser error page. Not an app bug.
-- **The WSL port relay is IPv4-only** and `localhost` resolves to `::1` first.
-  Configs name `127.0.0.1`. Do not "tidy" that back.
+  `mvn verify`. Expected: 3 surefire, 9 failsafe.
+- **`./mvnw verify` fails from Windows** at Docker discovery, by design.
+- **Fixtures that write `held_by_reservation_id` directly create orphans** that
+  V4's foreign key then rejects at migration time. V4 cleans them up; do not
+  reintroduce the pattern. Use the real reservation API.
+- **`npm --prefix <path> run dev`**, not `npm run dev --prefix <path>`.
+- **`.claude/launch.json` must use the 8.3 short path**; that is also why
+  `server.fs.strict` is off.
+- **The WSL port relay is IPv4-only**; configs name `127.0.0.1` deliberately.
 - **A catch-all `@ExceptionHandler(Exception)` swallows security exceptions.**
-  Keep the explicit `AccessDeniedException` handler ahead of it.
-- **Boot 4 is not Boot 3**: `-webmvc` not `-web`, and Jackson is
-  `tools.jackson.databind`.
-- **`NimbusJwtEncoder` needs an explicit HS256 header**, or it defaults to RS256
-  and fails at runtime.
+- **Boot 4 is not Boot 3**: `-webmvc` not `-web`, Jackson is `tools.jackson.databind`.
+- **`NimbusJwtEncoder` needs an explicit HS256 header.**
 - **Never test concurrency on H2**, and never mark a concurrency test
   `@Transactional`.
-- **Do not remove the `status` predicate** from the seat-hold UPDATE in Phase 3.
-  It is the entire double-booking defence.
+- **Do not remove the `status` predicate** from `EventSeatRepository.tryHold`.
+  It is the entire double-booking defence, and without it the query still looks
+  correct.

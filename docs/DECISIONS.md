@@ -5,6 +5,69 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-24 - Conflict reporting happens after rollback, never nested
+
+**Context.** A 409 should name the seats the caller lost. Working that out means
+reading committed state, and the obvious places to do it are both wrong.
+
+**Decision.** `SeatsUnavailableException` carries only the request. The seats
+that were lost are resolved in `ReservationExceptionHandler`, which runs after
+the transaction has rolled back and released its connection.
+
+**Why not the alternative.** Reading inside the failed transaction would see that
+transaction's own doomed writes. Reading in a `REQUIRES_NEW` transaction would
+take a second pooled connection while still holding the first - at 200
+concurrent losers that exhausts the pool and deadlocks, precisely under the load
+the feature exists to handle.
+
+**Consequences.** There is a tiny window in which a lost seat is released again
+before the follow-up read, so the handler reports zero conflicts. The wording
+covers that honestly rather than naming seats that now look free.
+
+---
+
+## 2026-08-24 - The expiry sweeper is for the seat map, not for correctness
+
+**Context.** The obvious design makes a scheduled job responsible for freeing
+lapsed holds, which quietly makes that job load-bearing.
+
+**Decision.** The hold query itself treats a lapsed hold as claimable
+(`status='RESERVED' AND held_until < now()`), so a seat is reservable the instant
+its hold expires whether or not anything sweeps. The sweeper only tidies: it
+frees rows so the map looks right and marks reservations EXPIRED. It takes
+`pg_try_advisory_xact_lock` so only one instance sweeps, and skips rather than
+queues when another holds it.
+
+**Why not the alternative.** A scheduled job can be paused, fail, or lag under
+load - exactly when contention is highest. Correctness that depends on it fails
+at the worst possible moment.
+
+**Consequences.** `ConcurrentReservationIT` disables the sweeper entirely and
+still proves lapsed holds are reclaimable. If that test ever needs the sweeper
+running to pass, the separation has been broken.
+
+---
+
+## 2026-08-24 - One thread per caller in the concurrency harness
+
+**Context.** The first version of `ConcurrentReservationIT` used a 64-thread pool
+for 200 tasks with a start-gate latch. It hung the build indefinitely.
+
+**Decision.** The pool is sized to the number of callers, and the gate wait is
+bounded.
+
+**Why not the alternative.** With fewer threads than tasks, the running workers
+block on the gate while the remainder sit in the queue and never reach
+`ready.countDown()`. The gate never opens, and `ExecutorService.close()` waits on
+threads that can never finish - the harness deadlocks before touching the code
+under test, which reads exactly like a hang in the application.
+
+**Consequences.** 200 platform threads per test is heavy but bounded, and the
+gate is what makes this a stampede rather than a queue. Do not "optimise" the
+pool size back down.
+
+---
+
 ## 2026-08-24 - The seat map is dark; everything else is paper
 
 **Context.** The brief asked for something that reads as a commercial booking

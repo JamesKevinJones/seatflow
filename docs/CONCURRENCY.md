@@ -234,3 +234,31 @@ hold locks and mask the very behaviour under test.
 (general admission, or best-available assignment). It is not used for the
 pick-your-own-seat flow this project implements, but it is the natural extension
 if best-available is added later.
+
+---
+
+## 10. Where this lives, as implemented
+
+| Concept | File |
+| --- | --- |
+| The conditional UPDATE (Layer 1) | `event/infrastructure/EventSeatRepository.tryHold` |
+| Module seam | `event/application/SeatAllocationPort` |
+| Row-count verdict and rollback | `reservation/application/ReservationService.reserve` |
+| Conflict report, read after rollback | `reservation/presentation/ReservationExceptionHandler` |
+| Lazy expiry | the second branch of the `tryHold` predicate |
+| Sweeper, under advisory lock | `reservation/application/ReservationExpirySweeper` |
+| The proof | `reservation/ConcurrentReservationIT` |
+
+Two details that were decided while building, and are easy to get wrong again:
+
+**The conflict report cannot run inside the failed transaction.** It would read
+that transaction's own doomed writes. It also cannot run in a nested
+transaction: that takes a second pooled connection while still holding the
+first, so at 200 concurrent losers the pool deadlocks - precisely under the load
+the feature exists for. It runs in the exception handler, after rollback has
+released the connection.
+
+**The seat FK is `NO ACTION`, not `SET NULL`.** Nulling `held_by_reservation_id`
+while `status` stayed `RESERVED` would violate `ck_event_seat_state`. The
+database refuses to delete a reservation that still holds seats; release them
+first.

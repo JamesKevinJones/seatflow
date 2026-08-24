@@ -27,7 +27,9 @@ curl -s -o "$TMP/a" -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: applicat
 TOKEN=$(jget "$TMP/a" accessToken)
 [ -n "$TOKEN" ] || { echo "admin login failed"; exit 1; }
 
-VENUE_NAME="Chowdiah Memorial Hall"
+# Suffixed so the script can be run more than once: uq_venues_name_city allows
+# one venue of a given name per city.
+VENUE_NAME="Chowdiah Memorial Hall $(date +%H%M%S)"
 echo "creating venue: $VENUE_NAME"
 VENUE_BODY=$(python - "$VENUE_NAME" <<'PYEOF'
 import json, sys
@@ -85,9 +87,36 @@ echo "  event $EVENT_ID with $(jget "$TMP/e" availability.total) seats"
 curl -s -o "$TMP/p" -X POST "$BASE/api/v1/admin/events/$EVENT_ID/publish" -H "Authorization: Bearer $TOKEN"
 echo "  published: $(jget "$TMP/p" status)"
 
-echo "marking a realistic spread of held and sold seats"
+echo "holding seats through the real reservation API, as other people"
+# Two other customers each hold a handful of seats. These are genuine holds -
+# real reservations, real expiry - not rows poked into the table. Writing a
+# fake holder id straight into event_seats is what left orphaned references
+# that V4's foreign key later rejected.
+for holder in one two; do
+  EMAIL="demo-holder-$holder-$(date +%s%N)@example.com"
+  curl -s -o "$TMP/h-$holder" -X POST "$BASE/api/v1/auth/register" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$EMAIL\",\"password\":\"correct-horse-battery\",\"fullName\":\"Demo Holder\"}"
+  HTOKEN=$(jget "$TMP/h-$holder" accessToken)
+
+  # Take up to 8 seats each - the per-reservation cap.
+  SEATS=$(curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | python -c "
+import sys, json, random
+d = json.load(sys.stdin)
+free = [s['id'] for sec in d['sections'] for s in sec['seats'] if s['status'] == 'AVAILABLE']
+random.shuffle(free)
+print(json.dumps(free[:8]))
+")
+  curl -s -o /dev/null -X POST "$BASE/api/v1/reservations" \
+    -H "Authorization: Bearer $HTOKEN" -H 'Content-Type: application/json' \
+    -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":$SEATS}"
+done
+
+echo "marking some seats sold"
+# Still direct SQL: bookings do not exist until Phase 7, and booking_id is a
+# bare UUID column until V5 adds its foreign key. Replace this the moment
+# checkout is real.
 wsl.exe -e bash -lc "docker exec -i seatflow-postgres psql -U seatflow -d seatflow -q -v ON_ERROR_STOP=1 << 'SQL'
--- Sold: clustered toward the front, the way a real hall fills.
 UPDATE event_seats SET status='BOOKED', booking_id = gen_random_uuid()
  WHERE id IN (
    SELECT es.id FROM event_seats es
@@ -96,15 +125,6 @@ UPDATE event_seats SET status='BOOKED', booking_id = gen_random_uuid()
     WHERE es.event_id = '$EVENT_ID' AND es.status='AVAILABLE'
       AND sec.name = 'Stalls' AND s.row_label IN ('A','B','C')
     ORDER BY random() LIMIT 26);
-
--- Held right now by other people, expiring in a few minutes.
-UPDATE event_seats
-   SET status='RESERVED', held_by_reservation_id = gen_random_uuid(),
-       held_until = now() + interval '7 minutes'
- WHERE id IN (
-   SELECT id FROM event_seats
-    WHERE event_id = '$EVENT_ID' AND status='AVAILABLE'
-    ORDER BY random() LIMIT 19);
 
 SELECT status, count(*) FROM event_seats WHERE event_id='$EVENT_ID' GROUP BY status ORDER BY status;
 SQL" 2>&1 | tr -d '\0' | tail -6

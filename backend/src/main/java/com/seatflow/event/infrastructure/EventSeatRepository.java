@@ -3,9 +3,11 @@ package com.seatflow.event.infrastructure;
 import com.seatflow.event.domain.EventSeat;
 import com.seatflow.event.domain.EventSeatStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
@@ -31,12 +33,22 @@ public interface EventSeatRepository extends JpaRepository<EventSeat, UUID> {
     /**
      * Availability summary without transferring the seat map. Returns one row
      * per status present, as {@code [status, count]}.
+     * <p>
+     * A lapsed hold is counted as AVAILABLE, because that is what it is: the
+     * hold query will happily give that seat to the next caller. Counting it as
+     * RESERVED would mean the page says "held" about a seat anyone can take,
+     * and the number would only become true once the sweeper caught up.
      */
-    @Query("""
-            select es.status, count(es) from EventSeat es
-             where es.event.id = :eventId
-             group by es.status
-            """)
+    @Query(value = """
+            SELECT CASE
+                     WHEN status = 'RESERVED' AND held_until < now() THEN 'AVAILABLE'
+                     ELSE status
+                   END AS effective_status,
+                   count(*)
+              FROM event_seats
+             WHERE event_id = :eventId
+             GROUP BY effective_status
+            """, nativeQuery = true)
     List<Object[]> countByStatus(@Param("eventId") UUID eventId);
 
     /**
@@ -54,6 +66,107 @@ public interface EventSeatRepository extends JpaRepository<EventSeat, UUID> {
              group by es.event.id
             """)
     List<Object[]> summarizeAvailability(@Param("eventIds") Collection<UUID> eventIds);
+
+    // ---------------------------------------------------------------------
+    // Seat allocation. This is the contended write path. Read
+    // docs/CONCURRENCY.md before changing any of it.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Claims seats for a reservation, atomically.
+     * <p>
+     * <b>The status predicate is load-bearing.</b> Under READ COMMITTED, a
+     * concurrent UPDATE on the same row blocks until the first transaction
+     * commits and then re-evaluates this WHERE clause against the new row
+     * version. Because the clause requires the seat to still be claimable, the
+     * loser matches zero rows. Delete the status check to "simplify" the query
+     * and it silently becomes last-writer-wins - the exact bug this project
+     * exists to prevent.
+     * <p>
+     * The second branch treats a lapsed hold as free, so correctness never
+     * depends on the expiry sweeper having run.
+     * <p>
+     * {@code now()} is the database clock on purpose: it is the one clock every
+     * competing transaction agrees on.
+     * <p>
+     * {@code clearAutomatically} matters because a bulk update bypasses the
+     * persistence context; without it, entities already loaded in this
+     * transaction would still report their stale status.
+     *
+     * @return how many seats were actually claimed. The caller compares this
+     *         against the number requested; anything less must roll back.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_seats
+               SET status = 'RESERVED',
+                   held_by_reservation_id = :reservationId,
+                   held_until = :heldUntil,
+                   version = version + 1,
+                   updated_at = now()
+             WHERE event_id = :eventId
+               AND id IN (:seatIds)
+               AND ( status = 'AVAILABLE'
+                  OR (status = 'RESERVED' AND held_until < now()) )
+            """, nativeQuery = true)
+    int tryHold(
+            @Param("eventId") UUID eventId,
+            @Param("seatIds") Collection<UUID> seatIds,
+            @Param("reservationId") UUID reservationId,
+            @Param("heldUntil") Instant heldUntil);
+
+    /**
+     * Returns the requested seats that are <em>not</em> claimable right now.
+     * <p>
+     * Used only to explain a failed hold. Must be read outside the failed
+     * transaction, or it would see that transaction's own doomed writes.
+     */
+    @Query(value = """
+            SELECT id FROM event_seats
+             WHERE event_id = :eventId
+               AND id IN (:seatIds)
+               AND NOT ( status = 'AVAILABLE'
+                      OR (status = 'RESERVED' AND held_until < now()) )
+            """, nativeQuery = true)
+    List<UUID> findUnclaimable(
+            @Param("eventId") UUID eventId,
+            @Param("seatIds") Collection<UUID> seatIds);
+
+    /**
+     * Releases every seat a reservation is holding.
+     * <p>
+     * Scoped to the holder, so a cancel that races an expiry sweep cannot
+     * release a seat somebody else has since taken.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_seats
+               SET status = 'AVAILABLE',
+                   held_by_reservation_id = NULL,
+                   held_until = NULL,
+                   version = version + 1,
+                   updated_at = now()
+             WHERE held_by_reservation_id = :reservationId
+               AND status = 'RESERVED'
+            """, nativeQuery = true)
+    int releaseByReservation(@Param("reservationId") UUID reservationId);
+
+    /**
+     * Bulk-releases every lapsed hold. Run by the sweeper for the sake of the
+     * seat map; correctness already comes from the predicate in {@link #tryHold}.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_seats
+               SET status = 'AVAILABLE',
+                   held_by_reservation_id = NULL,
+                   held_until = NULL,
+                   version = version + 1,
+                   updated_at = now()
+             WHERE status = 'RESERVED'
+               AND held_until < now()
+            """, nativeQuery = true)
+    int releaseExpiredHolds();
 
     long countByEventId(UUID eventId);
 

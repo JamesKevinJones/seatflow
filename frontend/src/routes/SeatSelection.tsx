@@ -2,11 +2,12 @@ import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
-import { useEvent, useReserveSeats, useSeatMap } from '../lib/queries'
+import { useCancelReservation, useEvent, useReserveSeats, useSeatMap } from '../lib/queries'
 import { formatMoney } from '../lib/format'
 import { Button } from '../components/ui'
 import { Seat } from '../components/Seat'
-import type { SeatMapSeat, SeatMapSection } from '../lib/types'
+import { HoldPanel } from '../components/HoldPanel'
+import type { ReservationResponse, SeatMapSeat, SeatMapSection } from '../lib/types'
 
 /** Most venues cap a single order. Eight is the usual house limit. */
 const MAX_SEATS = 8
@@ -19,9 +20,12 @@ export function SeatSelection() {
   const { data: event } = useEvent(eventId)
   const { data: seatMap, isPending, error, refetch, isFetching } = useSeatMap(eventId)
   const reserve = useReserveSeats(eventId)
+  const cancel = useCancelReservation(eventId)
 
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [limitHit, setLimitHit] = useState(false)
+  const [reservation, setReservation] = useState<ReservationResponse | null>(null)
+  const [heldLabels, setHeldLabels] = useState<string[]>([])
 
   const seatsById = useMemo(() => {
     const map = new Map<string, SeatMapSeat>()
@@ -69,10 +73,32 @@ export function SeatSelection() {
       return
     }
     try {
-      await reserve.mutateAsync(selectedIds)
+      const held = await reserve.mutateAsync(selectedIds)
+      // Keep the labels: the seat map refetches immediately and these seats now
+      // read as RESERVED, so the hold panel could not derive them afterwards.
+      setHeldLabels(selectedSeats.map((seat) => seat.label))
+      setReservation(held)
       setSelectedIds([])
-    } catch {
-      // Rendered from reserve.error below.
+    } catch (caught) {
+      // A conflict names the seats that were lost. Drop exactly those and keep
+      // the rest, so the user adjusts a selection instead of rebuilding it.
+      if (caught instanceof ApiError) {
+        const lost = (caught.extras.unavailableSeatIds as string[] | undefined) ?? []
+        if (lost.length > 0) {
+          setSelectedIds((current) => current.filter((id) => !lost.includes(id)))
+        }
+      }
+      // The message itself is rendered from reserve.error in the tray.
+    }
+  }
+
+  async function onRelease() {
+    if (!reservation) return
+    try {
+      await cancel.mutateAsync(reservation.id)
+    } finally {
+      setReservation(null)
+      setHeldLabels([])
     }
   }
 
@@ -152,20 +178,30 @@ export function SeatSelection() {
         </div>
       )}
 
-      <SelectionTray
-        seats={selectedSeats}
-        totalCents={totalCents}
-        limitHit={limitHit}
-        pending={reserve.isPending}
-        error={reserve.error instanceof ApiError ? reserve.error : null}
-        conflictIds={conflictIds}
-        onClear={() => {
-          setSelectedIds([])
-          setLimitHit(false)
-        }}
-        onReserve={() => void onReserve()}
-        signedIn={Boolean(user)}
-      />
+      {/* One bar at a time: pick seats, or hold them. */}
+      {reservation ? (
+        <HoldPanel
+          reservation={reservation}
+          seatLabels={heldLabels}
+          releasing={cancel.isPending}
+          onRelease={() => void onRelease()}
+        />
+      ) : (
+        <SelectionTray
+          seats={selectedSeats}
+          totalCents={totalCents}
+          limitHit={limitHit}
+          pending={reserve.isPending}
+          error={reserve.error instanceof ApiError ? reserve.error : null}
+          conflictIds={conflictIds}
+          onClear={() => {
+            setSelectedIds([])
+            setLimitHit(false)
+          }}
+          onReserve={() => void onReserve()}
+          signedIn={Boolean(user)}
+        />
+      )}
     </main>
   )
 }
@@ -308,11 +344,9 @@ function SelectionTray({
       <div className="mx-auto max-w-6xl px-5 py-4">
         {error ? (
           <p role="alert" className="mb-3 text-[13px] text-[#e8907c]">
-            {error.status === 404
-              ? 'Reservations aren’t available yet — the booking service isn’t running.'
-              : error.detail}
+            {error.detail}
             {conflictIds.length > 0
-              ? ` ${conflictIds.length} of your seats were taken while you chose.`
+              ? ' The map has been refreshed — those seats are now shown as taken.'
               : ''}
           </p>
         ) : limitHit ? (
