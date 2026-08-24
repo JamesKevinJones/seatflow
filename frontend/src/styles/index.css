@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/*
+  SeatFlow design tokens.
+
+  The idea the whole interface hangs on: browsing happens in daylight, choosing
+  a seat happens in the room. The catalogue is paper - bright, legible, scannable.
+  The auditorium is the house with the lights down, where available seats glow
+  and taken seats go dark. That is not decoration; it is how seat state is read.
+*/
+@theme {
+  /* Daylight: catalogue, forms, reading. */
+  --color-paper: #f4f4f1;
+  --color-paper-raised: #fbfbf9;
+  --color-paper-sunk: #e8e8e3;
+  --color-rule: #d8d8d1;
+
+  /* Ink: text on paper. Blue-black, never #000. */
+  --color-ink: #16181d;
+  --color-ink-muted: #5c6069;
+  --color-ink-faint: #8b8f98;
+
+  /* The house, lights down. Seat map ground. */
+  --color-house: #101319;
+  --color-house-raised: #171b23;
+  --color-house-rule: #262b35;
+  --color-house-text: rgba(255, 255, 255, 0.92);
+  --color-house-muted: rgba(255, 255, 255, 0.52);
+
+  /* Brass: stage light, gilt fittings, the one accent. */
+  --color-brass: #c8892f;
+  --color-brass-bright: #e6a84a;
+  --color-brass-deep: #8f5f18;
+
+  /* Semantic. Muted on purpose - they report, they do not shout. */
+  --color-alarm: #a8402c;
+  --color-alarm-soft: #f6e3df;
+
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* An intentional radius scale, not one value used everywhere. Seats are
+     nearly square because theatre seats are; panels are softer. */
+  --radius-seat: 3px;
+  --radius-control: 6px;
+  --radius-panel: 12px;
+
+  /* Layered and faint. A single 16px drop shadow reads flat. */
+  --shadow-raise: 0 1px 2px rgba(22, 24, 29, 0.05), 0 2px 8px rgba(22, 24, 29, 0.04);
+  --shadow-lift: 0 1px 2px rgba(22, 24, 29, 0.06), 0 4px 16px rgba(22, 24, 29, 0.06),
+    0 12px 32px rgba(22, 24, 29, 0.04);
+
+  /* One curve for entrances, one snappier one for direct manipulation. */
+  --ease-enter: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-snap: cubic-bezier(0.32, 0.72, 0.24, 1);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-rule);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-synthesis-weight: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  /* Visible, branded focus. Never remove the ring. */
+  :focus-visible {
+    outline: 2px solid var(--color-brass);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Tabular figures everywhere numbers are compared: prices, seat counts,
+     row numbers. Proportional digits make columns of money look ragged. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+  Reduced motion: kill movement, keep opacity. Disabling a 120ms fade as well
+  makes the interface feel broken rather than calm.
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-property: opacity, color, background-color, border-color !important;
+    transition-duration: 120ms !important;
+    scroll-behavior: auto !important;
+  }
+}

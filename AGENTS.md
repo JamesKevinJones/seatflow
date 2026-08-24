@@ -32,7 +32,11 @@ Pinned, because a wrong guess here breaks the build.
 - **Redis 7** — cache and coordination only, never an arbiter of correctness
 - **Apache Kafka** — asynchronous domain events, added in Phase 8
 - **Maven Wrapper** (`mvnw`) — Maven is not installed on this machine and does not need to be
-- **React 19 + Vite + TypeScript + Tailwind + TanStack Query** — frontend, Phase 4
+- **React 19 + Vite 8 + TypeScript + Tailwind 4 + TanStack Query 5 + React Router 7**
+  — frontend. Tailwind 4 is CSS-first: tokens live in `@theme` inside
+  `src/styles/index.css`, there is no `tailwind.config.js`. No Axios (fetch is
+  enough), no Zustand (auth is Context, seat selection is page state), no
+  component library.
 - **Testcontainers** — integration tests run against real PostgreSQL
 
 ## Layout

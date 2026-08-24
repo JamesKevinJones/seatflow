@@ -5,6 +5,88 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-24 - The seat map is dark; everything else is paper
+
+**Context.** The brief asked for something that reads as a commercial booking
+product, not a student dashboard. The default answers - cream with a serif
+display, or near-black with an acid accent - are what an unspecified prompt
+produces, and they look the same whatever the product is.
+
+**Decision.** Two rooms. Browsing, forms, and reading happen on paper: warm
+off-white, ink text, brass accent. Choosing a seat happens in the house with the
+lights down: available seats glow, taken seats are dark. The header changes tone
+with the route.
+
+**Why not the alternative.** A single palette throughout would have been less
+code. But the light/dark split is doing semantic work, not decoration - "lit
+means you can have it" is the seat legend, and it is the one thing about this
+product that is actually distinctive.
+
+**Consequences.** Any new screen has to pick a room. Anything on the reservation
+path is house-dark; anything informational is paper.
+
+---
+
+## 2026-08-24 - Vite dev proxy instead of CORS
+
+**Context.** The frontend needs to call the backend. The backend has no CORS
+configuration, deliberately deferred since Phase 1.
+
+**Decision.** `server.proxy` maps `/api` to `http://127.0.0.1:8080`, so in
+development the browser only ever talks to its own origin and CORS never comes
+into it.
+
+**Why not the alternative.** Configuring CORS now would mean writing a policy
+that cannot be exercised properly until there is a real deployed origin, and
+permissive dev CORS has a habit of surviving into production.
+
+**Consequences.** A real deployment - frontend and backend on different origins -
+still needs a CORS policy on the backend. The proxy hides that gap rather than
+closing it, and it is recorded as an open question in STATE.md.
+
+---
+
+## 2026-08-24 - fs.strict is off in the Vite dev server
+
+**Context.** The project path contains a space ("Kevin codes"). The Claude Code
+preview launcher cannot pass such a path, so it starts the dev server via the 8.3
+short form. Vite keeps that spelling for request ids but realpaths its serving
+allow list, so index.html failed to match its own allow entry and every request
+returned a bare 403.
+
+**Decision.** `server.fs.strict: false`.
+
+**Why not the alternative.** Listing both spellings in `fs.allow` does not work -
+entries are realpathed before comparison. Pinning `root` fixes index.html but
+breaks the `/@vite/client` URL. Moving the repo out of "Kevin codes" would fight
+the workspace convention for one tool's limitation.
+
+**Consequences.** Development server only; `vite build` is unaffected and the
+server binds to localhost. Revisit if the project ever moves to a space-free path.
+
+---
+
+## 2026-08-24 - The reservation button calls an endpoint that does not exist
+
+**Context.** Phase 4 was started before Phase 3, so the seat selection screen has
+no `POST /api/v1/reservations` to call.
+
+**Decision.** Wire the call to the real endpoint shape from the Phase 0 design,
+including the Idempotency-Key header, and let the resulting 404 surface as a
+plain message: "Reservations aren't available yet - the booking service isn't
+running."
+
+**Why not the alternative.** Stubbing a fake success would make the screen demo
+well and hide the fact that the core of the product is missing. A mock would also
+have to be found and removed later, and mocks that look like features have a way
+of shipping.
+
+**Consequences.** The screen is complete apart from the hold itself and starts
+working when Phase 3 lands, with no frontend change beyond deleting the
+404-specific copy.
+
+---
+
 ## 2026-08-23 - Integration tests are *IT and run under Failsafe
 
 **Context.** `EventSeatGenerationIT` was written, compiled, and reported nothing.

@@ -158,14 +158,47 @@ All 29 checks must pass. Last full run: 29 passed, 0 failed.
 
 ---
 
-## 6. Frontend (from Phase 4)
+## 6. Frontend
+
+Needs the backend running (part 4) and some published data. `scripts/seed-demo.sh`
+creates one realistic event with a 188 seat venue and a spread of held and sold
+seats:
+
+```bash
+bash scripts/seed-demo.sh
+```
+
+Typecheck and production build - the dev server does not catch unused locals,
+`tsc -b` does:
+
+```bash
+cd frontend && npm run build
+```
+
+Run it:
 
 ```bash
 cd frontend && npm run dev
 ```
 
-Note: this project path contains a space (`Kevin codes`), which breaks
-`preview_start`. Use the 8.3 short path in `.claude/launch.json`.
+Then check http://localhost:5173 shows the event list with real counts, and
+`/events/{id}/seats` renders the map with four visually distinct seat states.
+
+**Launching from Claude Code**: `.claude/launch.json` at the session root starts
+it as `seatflow-web`. Two constraints, both learned the hard way:
+
+- The path in `runtimeArgs` must be the **8.3 short form**
+  (`C:/Users/kj638/KEVINC~1/...`). The launcher cannot pass a path containing a
+  space, and fails with `'C:\Program' is not recognized`.
+- `npm --prefix <path> run dev`, in that order. `npm run dev --prefix <path>`
+  passes `--prefix` to Vite instead of npm.
+- The short path is why `server.fs.strict` is off - see DECISIONS.
+
+**Measuring layout in the preview browser**: when the Browser pane is not
+displayed the page does not composite, so CSS transitions freeze part-way and
+`getBoundingClientRect` returns mid-transition values. Inject
+`*{transition:none !important}` before measuring, or you will chase a layout bug
+that does not exist.
 
 ---
 
