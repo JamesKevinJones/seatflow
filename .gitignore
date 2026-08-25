@@ -34,3 +34,8 @@ Desktop.ini
 # Logs
 *.log
 logs/
+
+# Per-tool agent config. The project context these point at lives in AGENTS.md,
+# which is tracked; these are local pointers to it and nothing more.
+CLAUDE.md
+GEMINI.md
