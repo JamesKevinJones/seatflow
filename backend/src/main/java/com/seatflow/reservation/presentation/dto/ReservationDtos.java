@@ -42,8 +42,17 @@ public final class ReservationDtos {
             List<ReservedSeat> seats) {
     }
 
+    /**
+     * @param label       human seat position, e.g. A12. Checkout shows this;
+     *                    reservation_seats stores only identifiers, so it is
+     *                    resolved at read time.
+     * @param priceCents  the price quoted when the hold was taken, not the
+     *                    seat's price now.
+     */
     public record ReservedSeat(
             UUID eventSeatId,
+            String label,
+            String sectionName,
             long priceCents) {
     }
 }

@@ -13,10 +13,6 @@ import java.util.UUID;
  * the write path is narrowed to these operations. That boundary is what stops
  * the two modules fusing, and it means every mutation of the contended row goes
  * through one auditable place.
- * <p>
- * Booking confirmation joins this interface in Phase 7. It is deliberately not
- * declared yet: an unimplemented method is an invitation to guess at semantics
- * that have not been designed.
  */
 public interface SeatAllocationPort {
 
@@ -31,17 +27,30 @@ public interface SeatAllocationPort {
     /** Releases every seat currently held by the reservation. */
     int release(UUID reservationId);
 
+    /**
+     * Turns a live hold into a sale.
+     *
+     * @return the number of seats confirmed. Fewer than the reservation holds
+     *         means the hold lapsed mid-payment, and the booking must not stand.
+     */
+    int confirm(UUID reservationId, UUID bookingId);
+
+    /** Extends a live hold, to keep it alive across a payment attempt. */
+    int extendHold(UUID reservationId, Instant newHeldUntil);
+
     /** The requested seats that are not claimable right now. For error reporting. */
     List<UUID> findUnclaimable(UUID eventId, Collection<UUID> seatIds);
 
     /**
-     * Prices of the given seats, for the snapshot written into
-     * {@code reservation_seats}. What was quoted is what gets charged, even if
-     * an admin reprices the seat afterwards.
+     * Describes seats: where they are and what they cost right now.
+     * <p>
+     * Used both to snapshot prices into {@code reservation_seats} - what was
+     * quoted is what gets charged, even if an admin reprices later - and to put
+     * human seat labels on a reservation that only stores identifiers.
      */
-    List<SeatPrice> priceSnapshot(Collection<UUID> seatIds);
+    List<SeatDetail> describe(Collection<UUID> seatIds);
 
-    /** One seat's identity and price at a point in time. */
-    record SeatPrice(UUID eventSeatId, long priceCents) {
+    /** One seat: where it is, and what it costs at this moment. */
+    record SeatDetail(UUID eventSeatId, String label, String sectionName, long priceCents) {
     }
 }

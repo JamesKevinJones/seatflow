@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { request } from './api'
 import type {
+  BookingResponse,
   EventDetail,
   EventSummary,
   Page,
@@ -12,6 +13,9 @@ export const queryKeys = {
   events: (category: string | null) => ['events', category] as const,
   event: (id: string) => ['event', id] as const,
   seatMap: (id: string) => ['seatMap', id] as const,
+  reservation: (id: string) => ['reservation', id] as const,
+  bookings: () => ['bookings'] as const,
+  booking: (id: string) => ['booking', id] as const,
 }
 
 export function useEvents(category: string | null) {
@@ -90,5 +94,57 @@ export function useCancelReservation(eventId: string) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.seatMap(eventId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.event(eventId) })
     },
+  })
+}
+
+/**
+ * The hold, re-read from the server.
+ *
+ * Checkout fetches this rather than carrying the reservation through router
+ * state, so a refresh on the checkout page does not lose the hold - and the
+ * expiry shown is the server's, not one the client remembered.
+ */
+export function useReservation(reservationId: string) {
+  return useQuery({
+    queryKey: queryKeys.reservation(reservationId),
+    queryFn: () =>
+      request<ReservationResponse>(`/v1/reservations/${reservationId}`, { auth: true }),
+    enabled: Boolean(reservationId),
+    staleTime: 0,
+  })
+}
+
+/** Pays for a hold. Returns the booking, not a receipt. */
+export function usePay() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (input: { reservationId: string; paymentMethod: string }) =>
+      request<BookingResponse>('/v1/payments', {
+        method: 'POST',
+        auth: true,
+        body: input,
+      }),
+    onSuccess: (booking) => {
+      queryClient.setQueryData(queryKeys.booking(booking.id), booking)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.bookings() })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.seatMap(booking.eventId) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.event(booking.eventId) })
+    },
+  })
+}
+
+export function useBookings() {
+  return useQuery({
+    queryKey: queryKeys.bookings(),
+    queryFn: () => request<BookingResponse[]>('/v1/bookings', { auth: true }),
+  })
+}
+
+export function useBooking(bookingId: string) {
+  return useQuery({
+    queryKey: queryKeys.booking(bookingId),
+    queryFn: () => request<BookingResponse>(`/v1/bookings/${bookingId}`, { auth: true }),
+    enabled: Boolean(bookingId),
   })
 }

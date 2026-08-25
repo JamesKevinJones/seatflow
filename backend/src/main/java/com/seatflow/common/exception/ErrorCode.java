@@ -28,6 +28,11 @@ public enum ErrorCode {
     RESERVATION_EXPIRED("reservation-expired", "Reservation expired", HttpStatus.UNPROCESSABLE_ENTITY),
     EVENT_NOT_ON_SALE("event-not-on-sale", "Event not on sale", HttpStatus.CONFLICT),
 
+    // Payments
+    /** The provider refused the charge. Nothing was taken; a retry is fine. */
+    PAYMENT_DECLINED("payment-declined", "Payment declined", HttpStatus.PAYMENT_REQUIRED),
+    PAYMENT_IN_PROGRESS("payment-in-progress", "Payment already in progress", HttpStatus.CONFLICT),
+
     // Generic
     VALIDATION_FAILED("validation-failed", "Validation failed", HttpStatus.BAD_REQUEST),
     RESOURCE_NOT_FOUND("resource-not-found", "Resource not found", HttpStatus.NOT_FOUND),

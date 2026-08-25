@@ -1,7 +1,10 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { SiteHeader } from './components/SiteHeader'
+import { BookingConfirmation } from './routes/BookingConfirmation'
 import { Catalogue } from './routes/Catalogue'
+import { Checkout } from './routes/Checkout'
 import { EventDetail } from './routes/EventDetail'
+import { MyBookings } from './routes/MyBookings'
 import { Register } from './routes/Register'
 import { SeatSelection } from './routes/SeatSelection'
 import { SignIn } from './routes/SignIn'
@@ -29,6 +32,9 @@ export default function App() {
         <Route path="/" element={<Catalogue />} />
         <Route path="/events/:eventId" element={<EventDetail />} />
         <Route path="/events/:eventId/seats" element={<SeatSelection />} />
+        <Route path="/checkout/:reservationId" element={<Checkout />} />
+        <Route path="/bookings" element={<MyBookings />} />
+        <Route path="/bookings/:bookingId" element={<BookingConfirmation />} />
         <Route path="/sign-in" element={<SignIn />} />
         <Route path="/register" element={<Register />} />
         <Route path="*" element={<Navigate to="/" replace />} />

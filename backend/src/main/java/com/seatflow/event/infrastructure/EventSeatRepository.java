@@ -152,6 +152,35 @@ public interface EventSeatRepository extends JpaRepository<EventSeat, UUID> {
     int releaseByReservation(@Param("reservationId") UUID reservationId);
 
     /**
+     * Turns a live hold into a sale.
+     * <p>
+     * The predicate is as load-bearing here as it is in {@link #tryHold}. It
+     * requires the seat to still be RESERVED <em>by this reservation</em> and
+     * the hold to still be live. A payment that takes longer than the hold
+     * therefore cannot book a seat somebody else has since taken - the update
+     * matches nothing and the caller sees a short count.
+     *
+     * @return how many seats were confirmed. Anything less than the reservation
+     *         holds means the booking must not proceed.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_seats
+               SET status = 'BOOKED',
+                   booking_id = :bookingId,
+                   held_by_reservation_id = NULL,
+                   held_until = NULL,
+                   version = version + 1,
+                   updated_at = now()
+             WHERE held_by_reservation_id = :reservationId
+               AND status = 'RESERVED'
+               AND held_until > now()
+            """, nativeQuery = true)
+    int confirmForBooking(
+            @Param("reservationId") UUID reservationId,
+            @Param("bookingId") UUID bookingId);
+
+    /**
      * Bulk-releases every lapsed hold. Run by the sweeper for the sake of the
      * seat map; correctness already comes from the predicate in {@link #tryHold}.
      */
@@ -167,6 +196,29 @@ public interface EventSeatRepository extends JpaRepository<EventSeat, UUID> {
                AND held_until < now()
             """, nativeQuery = true)
     int releaseExpiredHolds();
+
+    /**
+     * Pushes a live hold's expiry out, so a payment in flight is not beaten by
+     * its own clock. Only extends holds that are still live - a lapsed hold
+     * must not be resurrected, because the seat may already be gone.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query(value = """
+            UPDATE event_seats
+               SET held_until = :newHeldUntil,
+                   version = version + 1,
+                   updated_at = now()
+             WHERE held_by_reservation_id = :reservationId
+               AND status = 'RESERVED'
+               AND held_until > now()
+            """, nativeQuery = true)
+    int extendHold(
+            @Param("reservationId") UUID reservationId,
+            @Param("newHeldUntil") Instant newHeldUntil);
+
+    /** Seats with their physical position and section, in one query. */
+    @Query("select es from EventSeat es join fetch es.seat s join fetch s.section where es.id in :ids")
+    List<EventSeat> findAllWithSeat(@Param("ids") Collection<UUID> ids);
 
     long countByEventId(UUID eventId);
 

@@ -55,6 +55,14 @@ export function SiteHeader({ tone = 'paper' }: { tone?: 'paper' | 'house' }) {
         <div className="ml-auto flex items-center gap-3">
           {loading ? null : user ? (
             <>
+              <NavLink
+                to="/bookings"
+                className={({ isActive }) =>
+                  `text-sm transition-colors duration-150 ${isActive ? text : muted}`
+                }
+              >
+                Bookings
+              </NavLink>
               <span className={`hidden text-sm sm:inline ${muted}`}>{user.fullName}</span>
               <Button variant="quiet" tone={tone} onClick={() => void signOut()}>
                 Sign out

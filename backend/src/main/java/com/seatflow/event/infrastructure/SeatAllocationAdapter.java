@@ -38,6 +38,16 @@ public class SeatAllocationAdapter implements SeatAllocationPort {
     }
 
     @Override
+    public int confirm(UUID reservationId, UUID bookingId) {
+        return eventSeatRepository.confirmForBooking(reservationId, bookingId);
+    }
+
+    @Override
+    public int extendHold(UUID reservationId, Instant newHeldUntil) {
+        return eventSeatRepository.extendHold(reservationId, newHeldUntil);
+    }
+
+    @Override
     public List<UUID> findUnclaimable(UUID eventId, Collection<UUID> seatIds) {
         if (seatIds.isEmpty()) {
             return List.of();
@@ -46,12 +56,18 @@ public class SeatAllocationAdapter implements SeatAllocationPort {
     }
 
     @Override
-    public List<SeatPrice> priceSnapshot(Collection<UUID> seatIds) {
+    public List<SeatDetail> describe(Collection<UUID> seatIds) {
         if (seatIds.isEmpty()) {
             return List.of();
         }
-        return eventSeatRepository.findAllById(seatIds).stream()
-                .map(seat -> new SeatPrice(seat.getId(), seat.getPriceCents()))
+        // Join-fetched: reading a label off a lazy association would be one
+        // extra query per seat.
+        return eventSeatRepository.findAllWithSeat(seatIds).stream()
+                .map(seat -> new SeatDetail(
+                        seat.getId(),
+                        seat.getSeat().label(),
+                        seat.getSeat().getSection().getName(),
+                        seat.getPriceCents()))
                 .toList();
     }
 }

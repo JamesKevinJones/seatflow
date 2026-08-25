@@ -1,7 +1,9 @@
 package com.seatflow.reservation.infrastructure;
 
 import com.seatflow.reservation.domain.Reservation;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -21,6 +23,24 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID> 
 
     @Query("select r from Reservation r left join fetch r.seats where r.id = :id")
     Optional<Reservation> findByIdWithSeats(@Param("id") UUID id);
+
+    /**
+     * Loads a reservation and holds a write lock on the row until the
+     * transaction ends.
+     * <p>
+     * This is the one place the project uses pessimistic locking, and it earns
+     * it: two payment attempts for the same reservation must not interleave, and
+     * unlike seat contention there is no natural predicate to arbitrate on. The
+     * lock is on a single row and held only for the length of one short
+     * transaction.
+     * <p>
+     * Seats are not join-fetched here - Hibernate cannot apply {@code FOR UPDATE}
+     * to a query with a fetch join against a collection, and the lock is meant
+     * for the reservation row alone.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from Reservation r where r.id = :id")
+    Optional<Reservation> lockById(@Param("id") UUID id);
 
     List<Reservation> findByUserIdOrderByCreatedAtDesc(UUID userId);
 

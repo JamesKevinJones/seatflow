@@ -22,7 +22,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Holding seats.
@@ -119,8 +121,8 @@ public class ReservationService {
 
         // Every seat is ours. Snapshot what was quoted, so a later reprice
         // cannot change what this user was promised.
-        List<Reservation.SeatHold> holds = seatAllocation.priceSnapshot(seatIds).stream()
-                .map(price -> new Reservation.SeatHold(price.eventSeatId(), price.priceCents()))
+        List<Reservation.SeatHold> holds = seatAllocation.describe(seatIds).stream()
+                .map(seat -> new Reservation.SeatHold(seat.eventSeatId(), seat.priceCents()))
                 .toList();
         reservation.recordSeats(holds);
         reservationRepository.save(reservation);
@@ -189,8 +191,21 @@ public class ReservationService {
     }
 
     private ReservationResponse toResponse(Reservation reservation) {
+        // Labels come from the event module; prices come from the hold itself,
+        // because a later reprice must not change what this customer was quoted.
+        Map<UUID, SeatAllocationPort.SeatDetail> details = seatAllocation
+                .describe(reservation.seatIds()).stream()
+                .collect(Collectors.toMap(SeatAllocationPort.SeatDetail::eventSeatId, detail -> detail));
+
         List<ReservedSeat> seats = reservation.getSeats().stream()
-                .map(seat -> new ReservedSeat(seat.getEventSeatId(), seat.getPriceCentsAtHold()))
+                .map(seat -> {
+                    var detail = details.get(seat.getEventSeatId());
+                    return new ReservedSeat(
+                            seat.getEventSeatId(),
+                            detail == null ? "?" : detail.label(),
+                            detail == null ? "?" : detail.sectionName(),
+                            seat.getPriceCentsAtHold());
+                })
                 .toList();
 
         long remaining = Math.max(0,

@@ -104,6 +104,9 @@ export interface Page<T> {
 
 export interface ReservedSeat {
   eventSeatId: string
+  /** Human seat position, e.g. A12. */
+  label: string
+  sectionName: string
   priceCents: number
 }
 
@@ -116,4 +119,25 @@ export interface ReservationResponse {
   secondsRemaining: number
   totalCents: number
   seats: ReservedSeat[]
+}
+
+export interface BookedSeat {
+  eventSeatId: string
+  label: string
+  sectionName: string
+  priceCents: number
+}
+
+export interface BookingResponse {
+  id: string
+  bookingReference: string
+  eventId: string
+  eventName: string
+  venueName: string
+  eventStartsAt: string
+  totalCents: number
+  currency: string
+  status: string
+  createdAt: string
+  seats: BookedSeat[]
 }

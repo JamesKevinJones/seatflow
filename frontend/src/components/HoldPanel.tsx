@@ -1,35 +1,8 @@
-import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { formatMoney } from '../lib/format'
+import { formatClock, useSecondsRemaining } from './Countdown'
 import { Button } from './ui'
 import type { ReservationResponse } from '../lib/types'
-
-/**
- * Seconds left on a hold, recomputed from the absolute expiry rather than
- * decremented. A decremented counter drifts whenever the tab is backgrounded
- * and the interval is throttled, and this number decides whether the user still
- * has their seats.
- */
-function useCountdown(expiresAt: string): number {
-  const [remaining, setRemaining] = useState(() => secondsUntil(expiresAt))
-
-  useEffect(() => {
-    setRemaining(secondsUntil(expiresAt))
-    const id = setInterval(() => setRemaining(secondsUntil(expiresAt)), 1000)
-    return () => clearInterval(id)
-  }, [expiresAt])
-
-  return remaining
-}
-
-function secondsUntil(iso: string): number {
-  return Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 1000))
-}
-
-function formatClock(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
-}
 
 /**
  * The state after a successful hold: what you have, what it costs, and how long
@@ -50,7 +23,7 @@ export function HoldPanel({
   onRelease: () => void
   releasing: boolean
 }) {
-  const remaining = useCountdown(reservation.expiresAt)
+  const remaining = useSecondsRemaining(reservation.expiresAt)
   const expired = remaining === 0
   const urgent = remaining > 0 && remaining <= 60
 
@@ -67,12 +40,8 @@ export function HoldPanel({
               {expired ? 'Hold expired' : 'Held for'}
             </div>
             <div
-              className={`tnum font-display text-[30px] leading-none font-semibold tabular-nums ${
-                expired
-                  ? 'text-[#e8907c]'
-                  : urgent
-                    ? 'text-[#e8907c]'
-                    : 'text-[var(--color-brass-bright)]'
+              className={`tnum font-display text-[30px] leading-none font-semibold ${
+                expired || urgent ? 'text-[#e8907c]' : 'text-[var(--color-brass-bright)]'
               }`}
             >
               {formatClock(remaining)}
@@ -87,16 +56,23 @@ export function HoldPanel({
             <div className="mt-0.5 truncate text-[14px] text-[var(--color-house-text)]">
               {seatLabels.join(', ')}
             </div>
-            <p className="mt-1 text-[12px] text-[var(--color-house-muted)]">
-              {expired
-                ? 'These seats have gone back to the pool. Choose again to try for them.'
-                : 'Checkout is not built yet, so these seats return to the pool when the timer runs out.'}
-            </p>
+            {expired ? (
+              <p className="mt-1 text-[12px] text-[var(--color-house-muted)]">
+                These seats have gone back to the pool. Choose again to try for them.
+              </p>
+            ) : null}
           </div>
 
-          <Button variant="quiet" tone="house" onClick={onRelease} disabled={releasing}>
-            {releasing ? 'Releasing…' : expired ? 'Start over' : 'Release seats'}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" tone="house" onClick={onRelease} disabled={releasing}>
+              {releasing ? 'Releasing…' : expired ? 'Start over' : 'Release'}
+            </Button>
+            {expired ? null : (
+              <Link to={`/checkout/${reservation.id}`}>
+                <Button>Continue to payment</Button>
+              </Link>
+            )}
+          </div>
         </div>
       </div>
     </div>
