@@ -101,7 +101,8 @@ never the pool; it is row-lock contention on 100 rows. Both runs and the
 reasoning are in **[load/RESULTS.md](load/RESULTS.md)**.
 
 Test suite: 3 unit + 27 integration tests against real PostgreSQL, Redis and
-Kafka via Testcontainers. Plus 87 end-to-end API checks across four shell suites.
+Kafka via Testcontainers. Plus 87 end-to-end API checks across four shell suites,
+all passing against a two-instance containerised stack.
 
 ---
 

@@ -24,6 +24,19 @@ check() {
   fi
 }
 
+skip() { printf '  SKIP  %-46s %s\n' "$1" "$2"; }
+
+# Is /actuator reachable on this origin at all?
+#
+# It is not proxied through nginx, and nginx answers an unmatched path with the
+# SPA - 200, with index.html in the body. Against the containerised stack a
+# status code alone is therefore worthless here: the "requires ADMIN" check
+# looks like a failure and the health check looks like a pass, both for the
+# same wrong reason. Ask whether the body is actually actuator JSON.
+actuator_reachable() {
+  curl -s "$BASE/actuator/health" | head -c 1 | grep -q '{'
+}
+
 jqf() { "$PY_BIN" -c "
 import sys,json
 try:
@@ -44,8 +57,12 @@ for k in sys.argv[1:]:
 " "$@"; }
 
 hr "1. health"
-BODY=$(curl -s -o $TMP/b -w '%{http_code}' $BASE/actuator/health); check "GET /actuator/health" 200 "$BODY"
-cat $TMP/b | jqf status components.db.status components.redis.status
+if actuator_reachable; then
+  BODY=$(curl -s -o $TMP/b -w '%{http_code}' $BASE/actuator/health); check "GET /actuator/health" 200 "$BODY"
+  cat $TMP/b | jqf status components.db.status components.redis.status
+else
+  skip "GET /actuator/health" "actuator is not exposed on this origin"
+fi
 
 hr "2. register"
 REG=$(curl -s -o $TMP/reg -w '%{http_code}' -X POST $BASE/api/v1/auth/register \
@@ -133,9 +150,16 @@ check "POST /refresh (successor after reuse)" 401 "$AFTER"
 cat $TMP/after | jqf detail
 
 hr "11. actuator beyond health requires ADMIN"
-ACT=$(curl -s -o $TMP/act -w '%{http_code}' $BASE/actuator/metrics -H "Authorization: Bearer $ACCESS")
-check "GET /actuator/metrics (USER role)" 403 "$ACT"
-cat $TMP/act | jqf type title
+if actuator_reachable; then
+  ACT=$(curl -s -o $TMP/act -w '%{http_code}' $BASE/actuator/metrics -H "Authorization: Bearer $ACCESS")
+  check "GET /actuator/metrics (USER role)" 403 "$ACT"
+  cat $TMP/act | jqf type title
+else
+  # Reaching actuator means reaching the backend directly. Against the
+  # containerised stack, check it from inside the network instead -
+  # docs/VERIFY.md part 11 has the command.
+  skip "GET /actuator/metrics (USER role)" "actuator is not exposed on this origin"
+fi
 
 printf '\n================================\n'
 printf '  PASSED: %d\n  FAILED: %d\n' "$PASS" "$FAIL"

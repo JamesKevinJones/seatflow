@@ -21,8 +21,10 @@ Everything below was measured, not assumed:
 - `./mvnw verify` in WSL: **3 surefire + 27 failsafe, 0 failures**
 - **Load: 1,000 users against 100 seats - 1,018 req/s, exactly 100 sold.** See
   `load/RESULTS.md`, including a tuning attempt that made things worse
-- Shell suites: auth 15, catalogue 29, reservations 21, checkout 22
-- **Against the containerised stack**: checkout 22, all services healthy
+- Shell suites: auth 15, catalogue 29, reservations 21, checkout 22 (87 checks)
+- **All four suites against the two-instance containerised stack**: 85 passed,
+  0 failed, 2 skipped - the skips are the actuator checks, which are not
+  reachable through nginx and are verified from inside the network instead
 - **Kafka stopped entirely**: checkout still 22 of 22, 4 bookings, 0 seats sold
   twice, 4 messages left pending; backlog drained in ~9s on restart with
   `attempts` peaking at 3
@@ -94,7 +96,9 @@ Ordered by how much time they cost.
   `wsl -e bash /mnt/c/.../script.sh`.
 - **nginx returns 200 with `index.html` for unmatched paths.** A request to an
   unproxied path such as `/actuator/prometheus` looks like it succeeded. Check
-  the body, not the status.
+  the body, not the status. This bit twice in one suite: the auth script's
+  actuator checks reported a false FAIL on "requires ADMIN" and, worse, a false
+  PASS on health. They now test the body first.
 - **Use `127.0.0.1`, not `localhost`, in healthchecks and configs.** It bit twice
   in different places: the WSL port relay and the nginx container both listen on
   IPv4 while `localhost` resolves to `::1` first.

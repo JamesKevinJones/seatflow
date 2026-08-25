@@ -168,7 +168,16 @@ wrong password, unknown account (must be indistinguishable from wrong password),
 bearer-token access, missing-token rejection, refresh rotation, refresh replay
 detection, family revocation after replay, and role-gated actuator access.
 
-All 15 checks must pass. Last full run: 15 passed, 0 failed.
+All 15 checks must pass. Last full run against the backend directly: **15
+passed, 0 failed**.
+
+Two of them - the actuator ones - **SKIP** when the base URL is the nginx origin,
+because actuator is not proxied there and nginx answers with the SPA. They are
+guarded by a body check rather than a status check, which matters in both
+directions: the "requires ADMIN" case looked like a failure, and the health case
+looked like a *pass*, both because a 200 with `index.html` is indistinguishable
+from success if you only read the status code. Through nginx the suite reports
+13 passed, 0 failed, 2 skipped.
 
 ```bash
 bash scripts/verify-catalog.sh
