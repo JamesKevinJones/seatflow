@@ -7,92 +7,101 @@
 
 ## Where things stand
 
-**Phase 3 complete. The reservation engine works, and the guarantee it exists
-for is proven under real contention.**
+**Phases 0 through 9 are done. The product works end to end and the guarantee it
+exists for is proven under load.**
 
-End to end today: browse published events, open one, see live availability
-including how many seats other people are holding, open the seat map, pick up to
-eight seats, sign in, hold them, watch a ten-minute countdown, and release them
-early. If someone takes one of your seats between choosing and holding, the
-whole hold is refused, the response names exactly which seat was lost, and the
-interface drops that one while keeping the rest of the selection.
+A visitor can browse events, open a seat map that updates live as other people
+take seats, choose up to eight, sign in, hold them against a ten-minute
+countdown, pay, and get a booking reference. A declined card keeps the hold. A
+seat lost to someone else is named in the error and greyed out while the rest of
+the selection survives.
 
-Proof, all actually run:
+Everything below was measured, not assumed:
 
-- `./mvnw verify` in WSL: **3 surefire + 9 failsafe, 0 failures**
-- `ConcurrentReservationIT`: 200 threads on one seat, exactly one winner; 200
-  across ten seats, exactly ten held and none held twice; overlapping multi-seat
-  requests all-or-nothing; lapsed holds reclaimable with the sweeper disabled
-- `scripts/verify-reservations.sh` **21 passed**, `verify-catalog.sh` **29
-  passed**, `verify-auth.sh` **15 passed**
-- Browser: hold two seats (map 146/16 to 144/18), countdown ticks, release
-  restores 146/16; a seat stolen mid-selection produces "1 of 2 requested seats
-  are no longer available" and is greyed out while the other stays selected
+- `./mvnw verify` in WSL: **3 surefire + 15 failsafe, 0 failures**
+- **Load: 1,000 users against 100 seats - 75,868 requests at 1,018 req/s, and
+  exactly 100 seats sold.** Full numbers, including a tuning experiment that made
+  things worse, in `load/RESULTS.md`
+- Shell suites: auth 15, catalogue 29, reservations 21, checkout 22 - all passing
+- Browser: live seat map moved 155 to 150 available when another customer took
+  five seats, with no refetch on the watching page
+- **Redis stopped mid-flight: seat map still 200, reservation still 201**
+
+Remaining phases: **8 (Kafka)** and **10 (Docker, metrics, README, diagrams)**.
 
 ## In progress
 
-Nothing half-done. Phase 3 finished at a clean boundary.
+Nothing half-done.
 
 ## The exact next step
 
-Phases 5 to 8 are all open. In rough order of value:
+Pick one:
 
-- **Phase 7 (payment and booking)** is the biggest functional gap - the hold
-  currently expires and nothing can be bought. `SeatAllocationPort` needs its
-  third method, `confirm(reservationId, bookingId)`, plus `V5__bookings_payments.sql`
-  with the `uq_booking_seat_once` index that makes double-selling structurally
-  impossible, and the `booking_id` foreign key V3 deferred.
-- **Phase 6 (WebSockets)** would remove the need to refresh the seat map by
-  hand. Broadcast only from `@TransactionalEventListener(AFTER_COMMIT)`.
-- **Phase 9 (load testing)** would put real numbers behind the concurrency work,
-  which is what a reader will want to see.
-- **Phase 5 (Redis)** is the least urgent: nothing is slow yet, and the caching
-  story is only interesting once there is traffic to cache.
+- **Phase 10** is the higher-value one now. The system works; what is missing is
+  the packaging that lets someone else run it - a compose file that starts the
+  whole stack, Actuator metrics for the counters named in the brief
+  (`reservation_conflicts_total` and friends), a real README, and an architecture
+  diagram. This is also what a reader looks at first.
+- **Phase 8 (Kafka)** would add `BookingConfirmed` and `ReservationExpired`
+  topics with in-process consumers. Do it through a **transactional outbox**:
+  `SeatStatusChanged` already fires after commit, but publishing to Kafka inside
+  the booking transaction is a dual write that eventually loses events or emits
+  ones for transactions that rolled back. V6 was reserved for the outbox table.
 
 ## Open questions
 
-- **Nothing can be bought.** Holds expire and the seats return. That is correct
-  behaviour for Phase 3 but it is not a product yet.
-- **CORS is still not configured**; the Vite dev proxy hides it.
-- **Deployment.** Vercel suits the frontend but cannot host Spring Boot - the
+- **Deployment.** Vercel suits the frontend but cannot host Spring Boot; the
   backend needs a container host plus managed Postgres and Redis. Free tiers
   sleep, which makes a shared link cold-start or fail.
-- **`scripts/seed-demo.sh` still writes BOOKED seats directly**, because
-  bookings do not exist. Replace that part when Phase 7 lands.
-- **Event detail shows no price** - `EventResponse` carries availability but no
-  price range.
+- **CORS is still unconfigured** - the Vite dev proxy hides it, and a deployed
+  frontend on another origin will need it. The WebSocket endpoint likewise
+  currently allows any origin pattern.
+- **Single instance only.** The WebSocket broker is Spring's in-memory one and
+  the per-event sequence counter is a local `AtomicLong`; a second instance would
+  broadcast only to its own clients and restart the sequence. The expiry
+  sweeper's advisory lock is written for multi-instance but has never been run
+  that way.
 - **Token storage** is localStorage; an httpOnly refresh cookie needs a backend
   change.
+- **Redis timeout is 2s**, so a Redis outage adds two seconds to the first
+  request that tries the cache. Lowering it would degrade faster.
 
 ## Known traps
 
 Ordered by how much time they cost.
 
 - **WSL terminates seconds after the last command exits**, taking PostgreSQL and
-  Redis with it. Start `wsl -e bash -lc "sleep infinity" &` first. "Connection
-  refused" almost always means this.
+  Redis with it. Start `wsl -e bash -lc "sleep infinity" &` first.
 - **CSS transitions freeze when the Browser pane is hidden**, so
   `getBoundingClientRect` returns mid-transition values. Inject
   `*{transition:none !important}` before measuring layout.
+- **Load tests must run with the backend inside WSL.** Driving load from WSL at a
+  Windows-hosted process gets throttled by Windows Firewall and measures the
+  bridge, not the app.
+- **Do not tune the connection pool up to fix latency.** It was measured: 20 to
+  60 made throughput 33% worse. The contention is PostgreSQL row locks.
 - **Sizing a concurrency-test thread pool below the task count deadlocks the
-  build.** Running workers block on the start gate, queued tasks never reach
-  `ready.countDown()`, and `ExecutorService.close()` waits forever. One thread
-  per caller.
+  build** - one thread per caller.
 - **`mvn test` silently skips every `*IT`** and still prints BUILD SUCCESS. Use
-  `mvn verify`. Expected: 3 surefire, 9 failsafe.
-- **`./mvnw verify` fails from Windows** at Docker discovery, by design.
-- **Fixtures that write `held_by_reservation_id` directly create orphans** that
-  V4's foreign key then rejects at migration time. V4 cleans them up; do not
-  reintroduce the pattern. Use the real reservation API.
+  `mvn verify`. Expected: 3 surefire, 15 failsafe.
+- **A new cache needs its value type registering** in `CacheConfig`. A generic
+  serializer returns `LinkedHashMap` and the failure lands *outside* the
+  `CacheErrorHandler`, turning a cache problem into a 500.
+- **Anything that changes seat state must publish `SeatStatusChanged`**, or the
+  live map and the cache both go stale.
+- **Fixtures must go through the API, not the tables.** Faked
+  `held_by_reservation_id` and `booking_id` values were rejected by V4's and V5's
+  foreign keys when they arrived.
+- **An entity with an assigned id makes Spring Data issue an UPDATE, not an
+  INSERT**, so `@PrePersist` never runs and audit columns stay null.
 - **`npm --prefix <path> run dev`**, not `npm run dev --prefix <path>`.
 - **`.claude/launch.json` must use the 8.3 short path**; that is also why
   `server.fs.strict` is off.
 - **The WSL port relay is IPv4-only**; configs name `127.0.0.1` deliberately.
 - **A catch-all `@ExceptionHandler(Exception)` swallows security exceptions.**
-- **Boot 4 is not Boot 3**: `-webmvc` not `-web`, Jackson is `tools.jackson.databind`.
-- **`NimbusJwtEncoder` needs an explicit HS256 header.**
+- **Boot 4 is not Boot 3**: `-webmvc` not `-web`, Jackson is `tools.jackson`.
 - **Never test concurrency on H2**, and never mark a concurrency test
   `@Transactional`.
 - **Do not remove the `status` predicate** from `EventSeatRepository.tryHold`.
-  It is the entire double-booking defence, and without it the query still looks
-  correct.
+  It is the entire double-booking defence, and the query still looks correct
+  without it.

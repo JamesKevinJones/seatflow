@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Seeds one realistic published event so the frontend has something to render.
 #
-# The held/sold seats at the end are set directly in the database because the
-# reservation and booking services do not exist yet (Phase 3 and Phase 7). They
-# are real rows in the real schema, satisfying ck_event_seat_state - not mocked
-# API responses. Remove this script once reservations can create those states.
+# Everything goes through the public API: real accounts, real holds, real
+# payments. Nothing is written directly to the tables. Earlier versions faked
+# held and sold seats with made-up identifiers, and both V4 and V5 then rejected
+# those rows when their foreign keys arrived - a good argument for seeding
+# through the front door.
 set -euo pipefail
 
 BASE="${SEATFLOW_BASE_URL:-http://127.0.0.1:8080}"
@@ -112,22 +113,33 @@ print(json.dumps(free[:8]))
     -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":$SEATS}"
 done
 
-echo "marking some seats sold"
-# Still direct SQL: bookings do not exist until Phase 7, and booking_id is a
-# bare UUID column until V5 adds its foreign key. Replace this the moment
-# checkout is real.
-wsl.exe -e bash -lc "docker exec -i seatflow-postgres psql -U seatflow -d seatflow -q -v ON_ERROR_STOP=1 << 'SQL'
-UPDATE event_seats SET status='BOOKED', booking_id = gen_random_uuid()
- WHERE id IN (
-   SELECT es.id FROM event_seats es
-     JOIN seats s ON s.id = es.seat_id
-     JOIN venue_sections sec ON sec.id = s.venue_section_id
-    WHERE es.event_id = '$EVENT_ID' AND es.status='AVAILABLE'
-      AND sec.name = 'Stalls' AND s.row_label IN ('A','B','C')
-    ORDER BY random() LIMIT 26);
+echo "buying seats through the real payment API"
+# Genuine purchases now that checkout exists: hold, then pay. Nothing is poked
+# into the tables. Writing BOOKED with a made-up booking_id is what V5's foreign
+# key later rejected, and it was never a real state anyway.
+for buyer in three four; do
+  EMAIL="demo-buyer-$buyer-$(date +%s%N)@example.com"
+  curl -s -o "$TMP/b-$buyer" -X POST "$BASE/api/v1/auth/register"     -H 'Content-Type: application/json'     -d "{\"email\":\"$EMAIL\",\"password\":\"correct-horse-battery\",\"fullName\":\"Demo Buyer\"}"
+  BTOKEN=$(jget "$TMP/b-$buyer" accessToken)
 
-SELECT status, count(*) FROM event_seats WHERE event_id='$EVENT_ID' GROUP BY status ORDER BY status;
-SQL" 2>&1 | tr -d '\0' | tail -6
+  SEATS=$(curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | python -c "
+import sys, json, random
+d = json.load(sys.stdin)
+free = [s['id'] for sec in d['sections'] for s in sec['seats'] if s['status'] == 'AVAILABLE']
+random.shuffle(free)
+print(json.dumps(free[:8]))
+")
+  curl -s -o "$TMP/hold-$buyer" -X POST "$BASE/api/v1/reservations"     -H "Authorization: Bearer $BTOKEN" -H 'Content-Type: application/json'     -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":$SEATS}"
+  RES=$(jget "$TMP/hold-$buyer" id)
+  [ -n "$RES" ] && curl -s -o /dev/null -X POST "$BASE/api/v1/payments"     -H "Authorization: Bearer $BTOKEN" -H 'Content-Type: application/json'     -d "{\"reservationId\":\"$RES\",\"paymentMethod\":\"card_visa_4242\"}"
+done
+
+echo "final ledger:"
+curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | python -c "
+import sys, json
+a = json.load(sys.stdin)['availability']
+print('  available %d | reserved %d | booked %d | total %d' % (a['available'], a['reserved'], a['booked'], a['total']))
+"
 
 echo
 echo "done. open http://localhost:5173/events/$EVENT_ID/seats"

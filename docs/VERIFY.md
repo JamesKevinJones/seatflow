@@ -88,7 +88,7 @@ wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw 
 
 WSL keeps a separate `~/.m2`, so the first run re-downloads dependencies.
 
-Current expected output: **3 tests under surefire, 9 under failsafe, 0 failures.**
+Current expected output: **3 tests under surefire, 15 under failsafe, 0 failures.**
 If failsafe reports 0 tests run, the plugin configuration has been lost - treat
 that as a build failure, not a pass.
 
@@ -181,6 +181,18 @@ takeable by someone else.
 
 All 21 checks must pass. Last full run: 21 passed, 0 failed.
 
+```bash
+bash scripts/verify-checkout.sh
+```
+
+Covers: payment requiring authentication, a successful charge producing a
+booking with the seats marked sold, idempotent replay returning the same
+booking rather than charging twice, a declined card leaving the hold intact and
+retryable, booking history, ownership privacy, and a released hold refusing
+payment.
+
+All 22 checks must pass. Last full run: 22 passed, 0 failed.
+
 ---
 
 ## 6. Frontend
@@ -227,14 +239,63 @@ that does not exist.
 
 ---
 
-## 7. Load test (from Phase 9)
+## 7. Load test
+
+**Run this inside WSL, with the backend inside WSL too.** Driving load from WSL
+at a Windows-hosted process crosses the Hyper-V bridge, and Windows Firewall
+starts dropping connections - which measures the network path, not the
+application.
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw spring-boot:run -Dspring-boot.run.profiles=local"
+```
+
+Then, in WSL:
 
 ```bash
 k6 run load/reserve-contention.js
 ```
 
-Record real numbers in `load/RESULTS.md`. Never write a performance figure that
-was not measured.
+k6 lives at `~/bin/k6` in WSL. Smaller runs for a quick check:
+
+```bash
+PEAK_VUS=40 HOLD_DURATION=10s SEATS=20 BUYERS=10 k6 run load/reserve-contention.js
+```
+
+The test fails itself if the ledger is ever oversold. Results in
+`load/RESULTS.md`. Never write a performance figure that was not measured.
+
+---
+
+## 8. Live seat updates
+
+With the app and frontend running, open a seat map and watch the indicator in the
+header read **Live**. Then take seats as somebody else and confirm the map moves
+without a reload:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/v1/reservations -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"eventId":"...","seatIds":["..."]}'
+```
+
+If the indicator reads **Not live**, check that `/ws` is permitted in
+`SecurityConfig` - a 401 on the handshake is the usual cause - and that
+`vite.config.ts` proxies `/ws` with `ws: true`.
+
+---
+
+## 9. Redis may be killed
+
+The point of the cache design is that nothing depends on it. Prove it:
+
+```bash
+wsl -e bash -lc "docker stop seatflow-redis"
+curl -s -o /dev/null -w '%{http_code}
+' http://127.0.0.1:8080/api/v1/events/<id>/seats
+wsl -e bash -lc "docker start seatflow-redis"
+```
+
+The seat map must still return 200 and reservations must still return 201, just
+more slowly. Anything else means something has started depending on the cache.
 
 ---
 

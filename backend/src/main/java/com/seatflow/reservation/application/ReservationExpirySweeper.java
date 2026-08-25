@@ -1,14 +1,21 @@
 package com.seatflow.reservation.application;
 
+import com.seatflow.event.application.SeatStatusChanged;
 import com.seatflow.event.infrastructure.EventSeatRepository;
 import com.seatflow.reservation.infrastructure.ReservationRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Returns lapsed holds to the pool.
@@ -36,13 +43,16 @@ public class ReservationExpirySweeper {
 
     private final ReservationRepository reservationRepository;
     private final EventSeatRepository eventSeatRepository;
+    private final ApplicationEventPublisher events;
 
     public ReservationExpirySweeper(
             ReservationRepository reservationRepository,
-            EventSeatRepository eventSeatRepository) {
+            EventSeatRepository eventSeatRepository,
+            ApplicationEventPublisher events) {
 
         this.reservationRepository = reservationRepository;
         this.eventSeatRepository = eventSeatRepository;
+        this.events = events;
     }
 
     /**
@@ -63,8 +73,18 @@ public class ReservationExpirySweeper {
             return;
         }
 
+        // Captured before the update, because afterwards they no longer look
+        // lapsed and there would be nothing to name in the broadcast.
+        Map<UUID, List<UUID>> lapsedByEvent = new LinkedHashMap<>();
+        for (Object[] row : eventSeatRepository.findLapsedHolds()) {
+            lapsedByEvent.computeIfAbsent((UUID) row[0], key -> new ArrayList<>()).add((UUID) row[1]);
+        }
+
         int seatsReleased = eventSeatRepository.releaseExpiredHolds();
         int reservationsExpired = reservationRepository.markLapsedAsExpired(Instant.now());
+
+        lapsedByEvent.forEach((eventId, seatIds) ->
+                events.publishEvent(SeatStatusChanged.released(eventId, seatIds)));
 
         if (seatsReleased > 0 || reservationsExpired > 0) {
             log.info("Expiry sweep released {} seat(s) from {} reservation(s)",

@@ -5,6 +5,88 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-25 - Cached values are serialized as their exact type
+
+**Context.** The obvious Redis cache setup uses a generic Object serializer.
+With Jackson 3 and no default typing, a cached record comes back as a
+`LinkedHashMap` and the caller throws `ClassCastException`.
+
+**Decision.** Each cache is configured with `JacksonJsonRedisSerializer` bound to
+the type it holds - `SeatMapResponse` for seat maps, `EventResponse` for event
+details.
+
+**Why not the alternative.** `enableUnsafeDefaultTyping()` exists and would work,
+but it is named that for a reason, and it would let the cache deserialize
+whatever a value claims to be.
+
+**Consequences.** More important than the type error itself: with a generic
+serializer the *cache read succeeds* and the cast fails afterwards, so the
+`CacheErrorHandler` never sees it and a bad cache entry becomes a 500 from a
+healthy endpoint. That would have quietly broken the "Redis cannot take the site
+down" property this project claims. Naming the type keeps any deserialization
+failure inside the cache read, where it degrades to a database fallback.
+Adding a cache means adding its type here.
+
+---
+
+## 2026-08-25 - Broadcast only after commit, and evict before broadcasting
+
+**Context.** Live seat updates are published as Spring application events and
+consumed by the notification module.
+
+**Decision.** `@TransactionalEventListener(AFTER_COMMIT)` on both the WebSocket
+broadcaster and the cache invalidator, with the invalidator ordered first.
+
+**Why not the alternative.** A plain `@EventListener` fires inside the
+transaction, so a hold that then rolled back would still have told every watching
+browser the seat was gone - a bug that only appears under the contention that
+causes rollbacks. And if the broadcast went first, a client reacting to it would
+re-read the seat map and get the stale cached copy the notification existed to
+correct.
+
+**Consequences.** Anything that changes seat state must publish
+`SeatStatusChanged`, or the map goes quietly stale for everyone watching.
+
+---
+
+## 2026-08-25 - The load test measures the design, not the network
+
+**Context.** The first load run drove k6 from WSL against the backend on Windows.
+Most requests failed with `dial: i/o timeout` - Windows Firewall dropping bulk
+inbound connections across the Hyper-V bridge.
+
+**Decision.** For load runs, the backend runs inside WSL alongside k6 and
+PostgreSQL. Numbers in `load/RESULTS.md` are from that topology.
+
+**Why not the alternative.** Measuring across the bridge produces figures about
+the firewall, not the application, and they would look like application failures.
+
+**Consequences.** These numbers are same-host and therefore optimistic about
+network latency. They are honest about the thing under test, which is contention
+handling.
+
+---
+
+## 2026-08-25 - A bigger connection pool made throughput worse
+
+**Context.** The first 1,000-user run produced 7 errors from pool exhaustion, so
+the obvious next step was a larger pool.
+
+**Decision.** Left at 20. Recorded the experiment rather than the assumption.
+
+**Why not the alternative.** Tripling the pool to 60 dropped throughput from
+1,018 to 679 req/s, raised p95 from 953ms to 1.68s, and produced 16 times more
+errors. Every user is competing for one of 100 rows, so the real contention is
+PostgreSQL row locks. More connections just means more transactions queued on the
+same locks. The pool was acting as admission control, and widening it let in more
+work than the database could usefully do.
+
+**Consequences.** Do not tune the pool up in response to latency without
+measuring. The lever that would actually help is doing less work per request -
+which is what the Redis read cache is for.
+
+---
+
 ## 2026-08-25 - The gateway call sits between two transactions, not inside one
 
 **Context.** Paying involves a call to a third party. The obvious shape wraps the

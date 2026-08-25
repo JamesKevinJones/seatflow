@@ -10,7 +10,9 @@ import com.seatflow.event.infrastructure.EventSeatRepository;
 import com.seatflow.event.presentation.dto.EventDtos.SeatMapResponse;
 import com.seatflow.event.presentation.dto.EventDtos.SeatMapSeat;
 import com.seatflow.event.presentation.dto.EventDtos.SeatMapSection;
+import com.seatflow.common.config.CacheConfig;
 import com.seatflow.venue.domain.VenueSection;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -55,6 +57,16 @@ public class SeatMapService {
      * the outcome rather than this one. From Phase 6 a WebSocket feed keeps the
      * map fresh between loads.
      */
+    /*
+     * The most-requested and largest response in the API, and the one whose
+     * invalidation is precisely known: any seat change publishes
+     * SeatStatusChanged, and SeatMapCacheInvalidator evicts on it.
+     *
+     * The key includes the visibility flag because an admin sees draft events
+     * that the public must not - sharing one entry between them would leak an
+     * unpublished event to anybody who asked.
+     */
+    @Cacheable(cacheNames = CacheConfig.SEAT_MAPS, key = "#eventId + ':' + #includeUnpublished")
     @Transactional(readOnly = true)
     public SeatMapResponse forEvent(UUID eventId, boolean includeUnpublished) {
         Event event = eventRepository.findByIdWithVenue(eventId)

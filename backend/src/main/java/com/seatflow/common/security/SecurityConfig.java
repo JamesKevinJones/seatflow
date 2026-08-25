@@ -66,6 +66,12 @@ public class SecurityConfig {
                         // needs no account; only reserving one does. Writes to
                         // /api/v1/admin/** are not matched here and stay locked.
                         .requestMatchers(HttpMethod.GET, "/api/v1/events", "/api/v1/events/**").permitAll()
+                        // The live seat feed. Open for the same reason the seat
+                        // map is: it carries exactly the same public data, just
+                        // pushed instead of polled. Clients can only subscribe -
+                        // WebSocketConfig registers no inbound destination, so
+                        // there is no way to command anything over this socket.
+                        .requestMatchers("/ws/**").permitAll()
                         // Liveness and readiness are consumed by orchestrators.
                         .requestMatchers("/actuator/health/**").permitAll()
                         .requestMatchers("/actuator/**").hasRole("ADMIN")

@@ -5,6 +5,7 @@ import com.seatflow.common.exception.ErrorCode;
 import com.seatflow.common.exception.SeatsUnavailableException;
 import com.seatflow.event.application.EventService;
 import com.seatflow.event.application.SeatAllocationPort;
+import com.seatflow.event.application.SeatStatusChanged;
 import com.seatflow.event.domain.Event;
 import com.seatflow.reservation.domain.Reservation;
 import com.seatflow.reservation.domain.ReservationSeat;
@@ -14,6 +15,7 @@ import com.seatflow.reservation.presentation.dto.ReservationDtos.ReserveRequest;
 import com.seatflow.reservation.presentation.dto.ReservationDtos.ReservedSeat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,15 +42,18 @@ public class ReservationService {
     private final ReservationRepository reservationRepository;
     private final SeatAllocationPort seatAllocation;
     private final EventService eventService;
+    private final ApplicationEventPublisher events;
 
     public ReservationService(
             ReservationRepository reservationRepository,
             SeatAllocationPort seatAllocation,
-            EventService eventService) {
+            EventService eventService,
+            ApplicationEventPublisher events) {
 
         this.reservationRepository = reservationRepository;
         this.seatAllocation = seatAllocation;
         this.eventService = eventService;
+        this.events = events;
     }
 
     /**
@@ -130,6 +135,9 @@ public class ReservationService {
         log.info("Reservation {} holds {} seat(s) for event {} until {}",
                 reservation.getId(), seatIds.size(), event.getId(), expiresAt);
 
+        // Delivered only if this transaction commits - see SeatUpdateBroadcaster.
+        events.publishEvent(SeatStatusChanged.held(event.getId(), seatIds));
+
         return toResponse(reservation);
     }
 
@@ -149,11 +157,15 @@ public class ReservationService {
             return toResponse(reservation);
         }
 
+        List<UUID> freedSeats = reservation.seatIds();
         int released = seatAllocation.release(reservationId);
         reservation.cancel();
         reservationRepository.save(reservation);
 
         log.info("Reservation {} cancelled, {} seat(s) released", reservationId, released);
+        if (released > 0) {
+            events.publishEvent(SeatStatusChanged.released(reservation.getEventId(), freedSeats));
+        }
         return toResponse(reservation);
     }
 

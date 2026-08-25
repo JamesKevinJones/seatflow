@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ApiError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { useCancelReservation, useEvent, useReserveSeats, useSeatMap } from '../lib/queries'
+import { useSeatUpdates } from '../lib/useSeatUpdates'
 import { formatMoney } from '../lib/format'
 import { Button } from '../components/ui'
 import { Seat } from '../components/Seat'
@@ -21,6 +22,8 @@ export function SeatSelection() {
   const { data: seatMap, isPending, error, refetch, isFetching } = useSeatMap(eventId)
   const reserve = useReserveSeats(eventId)
   const cancel = useCancelReservation(eventId)
+  // Live deltas from everyone else looking at this map.
+  const live = useSeatUpdates(eventId)
 
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [limitHit, setLimitHit] = useState(false)
@@ -138,14 +141,27 @@ export function SeatSelection() {
           </h1>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void refetch()}
-          className="font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--color-house-muted)]
-            transition-colors duration-150 hover:text-[var(--color-house-text)]"
-        >
-          {isFetching ? 'Refreshing…' : 'Refresh availability'}
-        </button>
+        <div className="flex items-center gap-4">
+          {/* Says plainly whether the map is updating itself. A stale map that
+              looks live is worse than one that admits it is stale. */}
+          <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--color-house-muted)]">
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 rounded-full ${
+                live ? 'bg-[var(--color-brass)]' : 'bg-white/25'
+              }`}
+            />
+            {live ? 'Live' : 'Not live'}
+          </span>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--color-house-muted)]
+              transition-colors duration-150 hover:text-[var(--color-house-text)]"
+          >
+            {isFetching ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       <Legend />

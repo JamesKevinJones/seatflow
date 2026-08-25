@@ -30,7 +30,7 @@ Pinned, because a wrong guess here breaks the build.
 - **PostgreSQL 16** — the single source of truth for booking integrity
 - **Flyway** — all schema changes; `ddl-auto` is `validate`, never `update`
 - **Redis 7** — cache and coordination only, never an arbiter of correctness
-- **Apache Kafka** — asynchronous domain events, added in Phase 8
+- **Apache Kafka** — asynchronous domain events, still to come (Phase 8)
 - **Maven Wrapper** (`mvnw`) — Maven is not installed on this machine and does not need to be
 - **React 19 + Vite 8 + TypeScript + Tailwind 4 + TanStack Query 5 + React Router 7**
   — frontend. Tailwind 4 is CSS-first: tokens live in `@theme` inside
@@ -77,9 +77,17 @@ load/                                      k6 scenarios (Phase 9)
    migration, never rely on Hibernate auto-DDL.
 6. **Money is `BIGINT` cents mapped to `long`.** No floating point, anywhere.
 7. **Broadcast only after commit** (`@TransactionalEventListener(AFTER_COMMIT)`).
-   Publishing before commit shows clients a state that may roll back.
-8. Match the surrounding code. Do not add dependencies without asking. Run the
-   checks in `docs/VERIFY.md` before reporting work as done.
+   Publishing before commit shows clients a state that may roll back. Anything
+   that changes seat state must publish `SeatStatusChanged`, or both the live
+   map and the Redis cache go stale.
+8. **Redis is never allowed to matter.** It holds read models only. Killing it
+   must leave reservations, expiry, and booking working - there is a check for
+   this in `docs/VERIFY.md`. A new cache must register its value type in
+   `CacheConfig`, or deserialization failures escape the `CacheErrorHandler`.
+9. **Fixtures go through the API, not the tables.** Faked identifiers have twice
+   been rejected by foreign keys added in a later migration.
+10. Match the surrounding code. Do not add dependencies without asking. Run the
+    checks in `docs/VERIFY.md` before reporting work as done.
 
 ## Commit rules
 

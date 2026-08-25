@@ -26,10 +26,22 @@ const ADMIN_PASSWORD = __ENV.SEATFLOW_ADMIN_PASSWORD || 'local-admin-password-ch
 const SEAT_COUNT = Number(__ENV.SEATS || 100)
 const BUYER_POOL = Number(__ENV.BUYERS || 60)
 
+/*
+ * A 409 is this system working correctly - it is what losing a seat race looks
+ * like, and under contention it is the majority outcome. Left at k6's default,
+ * http_req_failed would read ~99% and say nothing useful. Telling k6 that a
+ * conflict is an expected response makes that metric mean "requests that
+ * actually went wrong".
+ */
+http.setResponseCallback(http.expectedStatuses(200, 201, 409))
+
 const reservationsSucceeded = new Counter('reservations_succeeded')
 const reservationsConflicted = new Counter('reservations_conflicted')
 const unexpectedErrors = new Rate('unexpected_errors')
 const reserveDuration = new Trend('reserve_duration', true)
+
+const PEAK_VUS = Number(__ENV.PEAK_VUS || 1000)
+const HOLD_DURATION = __ENV.HOLD_DURATION || '20s'
 
 export const options = {
   scenarios: {
@@ -37,9 +49,9 @@ export const options = {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '10s', target: 200 },
-        { duration: '30s', target: 1000 },
-        { duration: '20s', target: 1000 },
+        { duration: '10s', target: Math.max(1, Math.round(PEAK_VUS / 5)) },
+        { duration: '30s', target: PEAK_VUS },
+        { duration: HOLD_DURATION, target: PEAK_VUS },
         { duration: '10s', target: 0 },
       ],
       gracefulRampDown: '10s',

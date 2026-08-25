@@ -5,11 +5,13 @@ import com.seatflow.booking.infrastructure.BookingRepository;
 import com.seatflow.common.exception.ApiException;
 import com.seatflow.common.exception.ErrorCode;
 import com.seatflow.event.application.SeatAllocationPort;
+import com.seatflow.event.application.SeatStatusChanged;
 import com.seatflow.payment.domain.Payment;
 import com.seatflow.payment.infrastructure.PaymentRepository;
 import com.seatflow.reservation.application.ReservationHoldPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -54,17 +56,20 @@ public class PaymentLedger {
     private final BookingRepository bookingRepository;
     private final ReservationHoldPort reservationHold;
     private final SeatAllocationPort seatAllocation;
+    private final ApplicationEventPublisher events;
 
     public PaymentLedger(
             PaymentRepository paymentRepository,
             BookingRepository bookingRepository,
             ReservationHoldPort reservationHold,
-            SeatAllocationPort seatAllocation) {
+            SeatAllocationPort seatAllocation,
+            ApplicationEventPublisher events) {
 
         this.paymentRepository = paymentRepository;
         this.bookingRepository = bookingRepository;
         this.reservationHold = reservationHold;
         this.seatAllocation = seatAllocation;
+        this.events = events;
     }
 
     /** An existing booking for this reservation, if it was already paid for. */
@@ -175,6 +180,9 @@ public class PaymentLedger {
 
         log.info("Booking {} confirmed for reservation {}: {} seat(s), {} cents",
                 booking.getBookingReference(), hold.reservationId(), confirmed, hold.totalCents());
+
+        events.publishEvent(SeatStatusChanged.booked(
+                hold.eventId(), hold.seats().stream().map(ReservationHoldPort.SeatLine::eventSeatId).toList()));
         return booking;
     }
 

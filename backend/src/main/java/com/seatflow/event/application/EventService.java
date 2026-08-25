@@ -1,5 +1,6 @@
 package com.seatflow.event.application;
 
+import com.seatflow.common.config.CacheConfig;
 import com.seatflow.common.exception.ApiException;
 import com.seatflow.common.exception.ErrorCode;
 import com.seatflow.event.domain.Event;
@@ -20,6 +21,7 @@ import com.seatflow.venue.domain.Venue;
 import com.seatflow.venue.infrastructure.SeatRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -184,6 +186,15 @@ public class EventService {
         return toResponse(event, availabilityOf(eventId));
     }
 
+    /*
+     * Cached alongside the seat map and evicted by the same listener, because
+     * the availability counts in this response change whenever seats do.
+     *
+     * Only reached through the proxy from a controller. The lifecycle methods in
+     * this class build their responses directly, so publishing or cancelling
+     * cannot serve a stale entry.
+     */
+    @Cacheable(cacheNames = CacheConfig.EVENT_DETAILS, key = "#eventId + ':' + #includeUnpublished")
     @Transactional(readOnly = true)
     public EventResponse findById(UUID eventId, boolean includeUnpublished) {
         Event event = eventRepository.findByIdWithVenue(eventId).orElseThrow(() -> notFound(eventId));

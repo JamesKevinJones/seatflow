@@ -181,6 +181,20 @@ public interface EventSeatRepository extends JpaRepository<EventSeat, UUID> {
             @Param("bookingId") UUID bookingId);
 
     /**
+     * The seats the next sweep will free, as {@code [eventId, eventSeatId]}.
+     * <p>
+     * Read before releasing so the broadcast can name them. Something could
+     * change between this read and the update, which is acceptable: this drives
+     * a live update, not a correctness decision, and a client that gets a stale
+     * delta re-syncs from REST.
+     */
+    @Query(value = """
+            SELECT event_id, id FROM event_seats
+             WHERE status = 'RESERVED' AND held_until < now()
+            """, nativeQuery = true)
+    List<Object[]> findLapsedHolds();
+
+    /**
      * Bulk-releases every lapsed hold. Run by the sweeper for the sake of the
      * seat map; correctness already comes from the predicate in {@link #tryHold}.
      */
