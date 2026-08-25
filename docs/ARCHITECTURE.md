@@ -138,17 +138,39 @@ Two rules that keep the client honest:
 Without these the seat map silently drifts out of sync and nobody notices until a
 user clicks a seat that is already gone.
 
-Multi-instance fan-out uses Redis pub/sub, added only when there is more than one
-instance. Single instance until then.
+The `seq` is issued by Redis `INCR`, so it is one sequence per event across the
+whole cluster rather than per instance, and every instance receives every update
+over the Redis fan-out channel. See "Making a second instance possible" below.
 
 ---
 
 ## Redis, deliberately non-authoritative
 
-Redis holds: the event and seat-map read cache, a short-TTL mirror of active
-holds, rate-limiting counters, and WebSocket fan-out. It holds **no lock that any
-correctness property depends on**. Full failure analysis in the Concurrency doc,
-part 6.
+Redis holds the event and seat-map read cache, the per-event broadcast sequence
+counter, and the seat-update fan-out channel. It holds **no lock, and no data,
+that any correctness property depends on**.
+
+The last two arrived with multi-instance support and are worth being precise
+about, because they are not cache. Neither is authoritative:
+
+- **Sequence counter.** If Redis is unreachable each instance falls back to a
+  local counter. Clients then see gaps, and a gap already means "refetch the map
+  over REST". An outage costs more refetching, never a wrong map.
+- **Fan-out channel.** If the publish fails, the update is delivered to this
+  instance's own subscribers directly. Other instances' clients miss it and
+  recover through the same gap mechanism.
+
+Killing Redis still leaves reservations, expiry, payment and booking working.
+Measured with the container stopped: reservations returned 201, six seats were
+held correctly, and nothing was sold twice - but each reservation took **3.05s
+against 42ms healthy**, and a seat map read 1.02s against 100ms. The
+after-commit path makes three separate Redis calls and each waits out the
+timeout; the seat map makes one.
+
+That is the honest cost, and it is the residue of a timeout choice rather than a
+design one. Removing it means moving the after-commit block off the request
+thread entirely, which is noted rather than done. Full failure analysis in the
+Concurrency doc, part 6.
 
 ---
 
@@ -183,28 +205,76 @@ OutboxRelay.drain()           [every 500ms, separate transaction]
 the records in `messaging.contract`, never the other way round, so the direction
 of the dependency matches the direction of the data.
 
-### Why domain events do not carry seat updates
+### Two fan-out mechanisms, on purpose
 
 The system pushes two different things outward, and they want opposite delivery
-semantics. It is worth being explicit about, because the tempting simplification
-is to use one mechanism for both.
+semantics. Using one mechanism for both is the tempting simplification and is
+wrong in either direction.
 
 | | Live seat updates | Domain events |
 | --- | --- | --- |
-| Carried by | STOMP over WebSocket | Kafka |
-| Needs to reach | **every** subscriber watching that seat map | **one** handler, once |
+| Carried by | Redis pub/sub | Kafka |
+| Delivered to | **every** instance, so every browser hears it | **one** instance, whichever holds the partition |
+| Why | each instance holds its own WebSocket sessions | three instances must not send three confirmation emails |
 | If it is lost | the client sees a sequence gap and refetches over REST | the outbox still holds it, and the relay retries |
-| Durability | none, and none needed - the map is refetchable | at-least-once, backed by PostgreSQL |
+| Durability | none, and none needed | at-least-once, backed by PostgreSQL |
+| Latency | sub-millisecond push | poll interval plus relay tick |
 
-A confirmation email must be sent once, which is what a Kafka consumer group
-gives: every instance joins group `seatflow`, and the broker hands each message
-to exactly one of them. A seat update is the opposite - it has to reach every
-connected browser, so it must arrive at every instance holding a subscriber.
+Kafka consumer groups deliver a message to one member of the group, which is
+exactly right for a confirmation email and exactly wrong for a seat map: the
+instance that received it would update its own browsers and the others would
+show a stale seat until someone reloaded. Redis pub/sub is the reverse.
 
-Today that distinction costs nothing, because there is only one instance. It is
-the thing that has to be solved first to run a second one: the STOMP broker is
-Spring's in-memory one, so a second instance would broadcast only to its own
-clients. Noted in the README's Known limits rather than pretended away.
+### Making a second instance possible
+
+Spring's simple STOMP broker only knows the sessions attached to its own JVM, so
+before this the second instance was a silent bug rather than a loud one. Three
+things had to change, none of which fails on a single node:
+
+```
+SeatStatusChanged (AFTER_COMMIT)
+        |
+        v
+SeatUpdateSequence.next()      Redis INCR - one counter per event, cluster-wide
+        |
+        v
+SeatUpdateFanout.publish()     -> Redis channel seatflow:seat-updates
+        |
+        +-- every instance, including this one --+
+                                                 v
+                              SeatUpdateSubscriber -> SeatUpdateDelivery
+                                                        -> local STOMP sessions
+```
+
+The originating instance does **not** deliver locally and also publish; it only
+publishes, and receives its own message back like everyone else. One code path
+from "a seat changed" to "a browser was told", running identically wherever the
+change happened.
+
+The sequence counter moved from a local `AtomicLong` to Redis `INCR`. Two
+instances with their own counters would send a browser 1, 1, 2, 2 - read as a gap
+by the client, which then refetches the whole map on every update. Live updates
+would appear to work while costing a full REST round trip each time.
+
+Deliberately **not** a database column. The obvious version - bumping a
+`seat_version` on the events row inside the reservation transaction - would put
+every concurrent hold for one event behind a single row lock, which is a hotspot
+introduced into the exact path the project exists to keep fast.
+
+### What else a second instance needed
+
+| Concern | How it is handled | Would have happened otherwise |
+| --- | --- | --- |
+| Expiry sweeper | `pg_try_advisory_xact_lock`, non-blocking | Every instance sweeping the same rows |
+| Outbox relay | `FOR UPDATE SKIP LOCKED`, no leader | Instances blocking on each other, or sending duplicates |
+| Domain event handling | one Kafka consumer group | One confirmation email per instance |
+| Admin bootstrap | advisory lock taken **before** the read | All instances insert, all but one hit `uq_users_email_lower`, and an `ApplicationRunner` that throws stops the application |
+| Load balancing | nginx re-resolves `backend` via Docker DNS | A static `upstream` resolves once at startup and pins every request to one replica |
+| Metrics | every meter tagged with the instance | Two instances collapsing into one flickering series |
+
+WebSocket connections need no stickiness. A socket stays on whichever instance
+answered the handshake, and every instance receives every update - needing
+sticky sessions here would mean the fan-out was broken.
 
 ### Consumers
 

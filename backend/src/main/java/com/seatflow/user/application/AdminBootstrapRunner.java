@@ -25,12 +25,21 @@ import org.springframework.transaction.annotation.Transactional;
  * </ul>
  * An existing password is never overwritten. Someone who already has the account
  * keeps their credentials; only the role is reconciled.
+ * <p>
+ * <b>Safe to run on several instances at once.</b> Without the advisory lock
+ * below, every instance in a fresh deployment reads "no admin", every instance
+ * inserts, and all but one hit {@code uq_users_email_lower}. An
+ * {@link ApplicationRunner} that throws stops the application, so a bug that
+ * cannot happen on one node takes down most of a cluster on its first boot.
  */
 @Component
 @EnableConfigurationProperties(AdminBootstrapProperties.class)
 public class AdminBootstrapRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(AdminBootstrapRunner.class);
+
+    /** Distinct from every other advisory lock key in the system. */
+    private static final long BOOTSTRAP_LOCK_KEY = 0x0AD811A7L;
 
     private final AdminBootstrapProperties properties;
     private final UserRepository userRepository;
@@ -54,6 +63,15 @@ public class AdminBootstrapRunner implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         if (!properties.isConfigured()) {
             log.info("Admin bootstrap skipped: seatflow.admin is not configured.");
+            return;
+        }
+
+        // Taken before the read, not after: the point is that whoever wins the
+        // lock is also the one whose SELECT decides whether to insert. Reading
+        // first and locking second would let two instances both see an empty
+        // table before either had committed.
+        if (!userRepository.tryAdvisoryLock(BOOTSTRAP_LOCK_KEY)) {
+            log.info("Admin bootstrap skipped: another instance is doing it.");
             return;
         }
 

@@ -3,6 +3,20 @@
 #   docker compose up --build
 #   open http://localhost:8088
 #
+# More than one backend:
+#
+#   docker compose up --build --scale backend=3
+#
+# Nothing else has to change for that to work. nginx re-resolves "backend"
+# through Docker's DNS on every request (see frontend/nginx.conf), the expiry
+# sweeper takes a PostgreSQL advisory lock so only one instance sweeps, the
+# outbox relay claims rows with FOR UPDATE SKIP LOCKED so each instance takes a
+# disjoint batch, all instances share one Kafka consumer group so a confirmation
+# is sent once, and seat updates fan out over Redis pub/sub so every instance
+# tells its own browsers. The backend publishes no host port, which is what
+# makes replicas possible at all - a fixed port mapping would collide on the
+# second one.
+#
 # This is the full stack, unlike infra/docker-compose.dev.yml which starts only
 # the databases so the backend and frontend can run from an IDE.
 #
@@ -112,6 +126,8 @@ services:
       # message broker able to keep the box office shut.
       kafka:
         condition: service_started
+    # No host port, deliberately. This is what lets `--scale backend=N` work:
+    # a `ports:` mapping here would make the second replica fail to bind.
     expose:
       - "8080"
     restart: unless-stopped

@@ -9,10 +9,17 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 /**
  * STOMP over WebSocket, for live seat updates.
  * <p>
- * The broker is Spring's simple in-memory one. That is honest for a single
- * instance and wrong for several: each would broadcast only to its own clients.
- * Going multi-instance means a real relay - Redis pub/sub or an external STOMP
- * broker - which is noted rather than pretended.
+ * The broker is Spring's simple in-memory one, which knows only about the STOMP
+ * sessions attached to this JVM. That is a problem the moment there is a second
+ * instance, and it is solved one layer up rather than here: every seat update is
+ * published to a Redis channel that all instances subscribe to, and each
+ * instance then delivers to its own sessions. See {@code SeatUpdateFanout}.
+ * <p>
+ * The alternative is an external STOMP broker - RabbitMQ or ActiveMQ - behind
+ * {@code enableStompBrokerRelay}. That is the heavier and more capable answer,
+ * and it would add a whole piece of infrastructure to solve a problem Redis
+ * already solves here, for a feed where every message is disposable and clients
+ * recover from a gap by re-fetching.
  * <p>
  * There is no inbound destination. Clients only subscribe; they never publish.
  * Seats change through the REST API, where the concurrency control lives, and

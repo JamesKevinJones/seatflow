@@ -88,12 +88,16 @@ wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw 
 
 WSL keeps a separate `~/.m2`, so the first run re-downloads dependencies.
 
-Current expected output: **3 tests under surefire, 21 under failsafe, 0 failures.**
+Current expected output: **3 tests under surefire, 27 under failsafe, 0 failures.**
 If failsafe reports 0 tests run, the plugin configuration has been lost - treat
 that as a build failure, not a pass.
 
 Per class: `EventSeatGenerationIT` 5, `OutboxIT` 6, `PaymentAndBookingIT` 6,
-`ConcurrentReservationIT` 4. The suite starts PostgreSQL, Redis **and Kafka**
+`ConcurrentReservationIT` 4, `MultiInstanceIT` 3, `RedisUnavailableIT` 3.
+
+`RedisUnavailableIT` is the only class that runs **without** a Redis container -
+it points the application at a closed port to prove it still starts and still
+sells seats. It has its own Testcontainers configuration for that reason. The suite starts PostgreSQL, Redis **and Kafka**
 containers, shared across every test class because they are beans on one
 `@TestConfiguration`.
 
@@ -308,6 +312,23 @@ wsl -e bash -lc "docker start seatflow-redis"
 The seat map must still return 200 and reservations must still return 201, just
 more slowly. Anything else means something has started depending on the cache.
 
+**Time it, do not just check the status.** "Slower" is where a real problem
+hides. Last run, on a fresh 12-seat event so there are seats to take:
+
+| | Redis up | Redis stopped |
+| --- | --- | --- |
+| Reservation | 42 ms | **3.05 s** |
+| Seat map GET | 100 ms | 1.02 s |
+
+Four seats correctly held, zero sold twice, and `seatflow_fanout_degraded_total`
+incremented once per hold - the fan-out fell back to local delivery exactly as
+designed. Redis restarting returns both figures to normal with no intervention.
+
+The reservation figure is three Redis calls (sequence, fan-out, cache eviction)
+each waiting out the 1s timeout; the seat map is one. It was **6.05s** when first
+measured on a 2s timeout. **If this number climbs again, something has been added
+to the after-commit path.**
+
 ---
 
 ## Known-failing
@@ -448,3 +469,79 @@ correctly does nothing and the check proves nothing:
 ```bash
 wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T postgres psql -U seatflow -d seatflow -c \"UPDATE reservations SET expires_at = now() - interval '1 minute' WHERE status = 'ACTIVE';\""
 ```
+
+---
+
+## 14. Two instances
+
+The one part of the system where being right on a developer machine proves
+nothing. Every failure mode here is silent on a single node.
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose up --build -d --scale backend=2"
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose ps"
+```
+
+Expect `seatflow-backend-1` and `seatflow-backend-2`, both healthy, and one
+`frontend`. If the second replica fails to bind a port, something has added a
+`ports:` mapping to the backend service.
+
+**Load is actually shared.** Counting log lines does not work - the backend does
+not log GETs. Read the per-instance counters instead:
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T backend curl -s -H \"Authorization: Bearer \$TOKEN\" http://<instance-ip>:8080/actuator/prometheus | grep http_server_requests_seconds_count"
+```
+
+Last run: 40 requests through nginx split **25 / 15**. Anything that lands 40 / 0
+means nginx is resolving the upstream once at startup again.
+
+**A seat update crosses instances.** The decisive check, and the one that was
+broken before this work. Connect a STOMP client directly to each backend
+container - not through nginx, or both could land on the same one - then hold a
+seat through the load balancer.
+
+`scripts/stomp-probe.js` is a dependency-free STOMP subscriber for exactly this;
+run it in a throwaway Node container on the compose network:
+
+```bash
+wsl -e bash -lc "docker run --rm --network seatflow_default -v <repo>/scripts:/probe:ro node:24-alpine node /probe/stomp-probe.js ws://<instance-ip>:8080/ws /topic/events/<eventId>/seats 25 INSTANCE-1"
+```
+
+Wait for both to print `SUBSCRIBED` before touching a seat. Redis pub/sub has no
+buffering, so a message published before a subscriber is registered is dropped
+and the check would prove nothing.
+
+Both clients must receive both messages, **with the same `seq`**:
+
+```
+INSTANCE-1 MESSAGE {"eventId":"...","seatIds":["..."],"status":"RESERVED","seq":1,...}
+INSTANCE-2 MESSAGE {"eventId":"...","seatIds":["..."],"status":"RESERVED","seq":1,...}
+```
+
+One client receiving nothing means the fan-out is broken. Both receiving it with
+*different* `seq` values means the counter went back to being per-instance, and
+every client will refetch the whole map on every update.
+
+**One confirmation per booking, and one sweep per tick.**
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose logs backend --since 5m | grep -c 'Confirmation for'"
+```
+
+Last run: a booking made on `backend-2` was confirmed by the consumer on
+`backend-1` - once, not twice. After forcing a hold to lapse, exactly one
+instance logged `Expiry sweep released`.
+
+**Startup is the other race.** The admin bootstrap is covered by
+`MultiInstanceIT`, which fires eight concurrent bootstraps and asserts one
+account and no failures. It was confirmed to fail with the advisory lock removed,
+so it tests the fix rather than decorating it. To see the real thing, drop the
+volumes and bring two instances up cold:
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose down -v && docker compose up -d --scale backend=2"
+```
+
+Both instances must reach healthy. One instance failing to start with a
+`uq_users_email_lower` violation is the bug this guards against.

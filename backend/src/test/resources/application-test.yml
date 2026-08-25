@@ -37,6 +37,14 @@ seatflow:
     # does not have the test suite stealing the application's messages.
     consumer-group: seatflow-test
 
+  admin:
+    # Configured so MultiInstanceIT can race the bootstrap runner. Without an
+    # admin configured the runner returns immediately and the test would pass
+    # while proving nothing.
+    email: bootstrap-race@seatflow.test
+    password: test-only-admin-password
+    full-name: Bootstrap Race Tester
+
   security:
     jwt:
       # Fixed so token assertions are reproducible across runs.

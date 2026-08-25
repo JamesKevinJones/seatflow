@@ -5,6 +5,188 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-25 - The fan-out subscription must not start with the context
+
+**Context.** Adding the cross-instance seat-update fan-out meant registering a
+listener on a `RedisMessageListenerContainer`. Such a container opens its
+subscription when the context starts, and if Redis is unreachable at that moment
+it throws - which surfaces as `ApplicationContextException: Failed to start bean`
+and the application does not start at all.
+
+A cache had become an availability dependency. That is the exact coupling this
+project spends most of its effort avoiding, and it was invisible: every
+integration test runs with a real Redis container, so nothing could catch it.
+It only appeared when the Redis timeout was tightened to 500ms and the entire
+suite failed to boot at once - 24 errors, all of them context load failures.
+
+**Decision.** The container is declared with `setAutoStartup(false)` and started
+from `SeatUpdateSubscription`, a scheduled task where a failure is a warning and
+another attempt in five seconds. `setRecoveryInterval` handles reconnects once it
+is running.
+
+**Why not the alternative.** Catching the exception at startup and giving up
+would leave the instance permanently unsubscribed after one bad moment - and the
+bad moment is exactly a rolling restart, when Redis and the application come back
+together. Retrying is what makes the degradation temporary.
+
+**Consequences.** `RedisUnavailableIT` now points the application at a closed
+port with no Redis container at all and asserts it starts, sells seats, and
+records domain events. It is the only test in the suite that runs without Redis,
+which is why it needs its own Testcontainers configuration.
+
+Also worth recording: `RedisMessageListenerContainer.isRunning()` reports its
+lifecycle flag, not connectivity - it returns true even when the subscription
+behind it failed. The accessor was renamed from `isSubscribed()` to `isStarted()`
+after a test asserted the other reading and failed.
+
+---
+
+## 2026-08-25 - The Redis timeout is 1s, not 2 seconds
+
+**Context.** Measured while verifying that multi-instance support had not put
+Redis on the correctness path. With Redis stopped, a reservation took **6.05s**,
+against 57ms healthy. Correctness was untouched - the seats were held, and
+nothing was ever sold twice - but the after-commit path makes three separate
+Redis calls (sequence `INCR`, fan-out publish, cache evictions) and each one sat
+out the full 2s timeout.
+
+**Decision.** `spring.data.redis.timeout: 1s`, plus an explicit
+`connect-timeout: 3s` so a slow TCP connect is not mistaken for an unusable
+cache.
+
+500ms was tried first and is too low: Lettuce applies the **command timeout to
+connection initialization as well**, and on a loaded machine the handshake needs
+longer than that. Every integration test failed to start. The failure was worth
+having - it is what exposed the startup-dependency bug above - but the value has
+to leave room for a connection to be established.
+
+**Why not the alternative.** Everything Redis is asked for on this path is a
+latency optimisation. If it has not answered in half a second, going to
+PostgreSQL is faster than continuing to wait - so a long timeout buys nothing and
+costs exactly the thing it was meant to protect. A local Redis answers in well
+under a millisecond, so this only trips when something is genuinely wrong, and
+tripping means using the database, which is always correct.
+
+**Consequences.** Measured on the final build with Redis stopped: a reservation
+takes **3.05s against 42ms healthy**, and a seat map read 1.02s against 100ms.
+Correct throughout - four seats held, none sold twice - and both figures return
+to normal when Redis restarts, with the fan-out re-subscribing on its own.
+
+Three seconds is still slow, and it is now a timeout choice rather than a design
+one. The deeper fix is to move the whole after-commit block off the request
+thread, which would make it near-zero. Not done: an async listener introduces
+ordering and queue-saturation questions, and starting that at the end of the work
+without room to verify it properly would be worse than a documented limitation.
+Figures are in `docs/VERIFY.md` part 9.
+
+---
+
+## 2026-08-25 - Seat updates fan out over Redis pub/sub, not a STOMP broker relay
+
+**Context.** Spring's simple STOMP broker only knows the sessions attached to its
+own JVM. Behind a load balancer that means a user on instance B never hears about
+a seat taken on instance A - and nothing errors, nothing logs, and it only
+appears once there is a second instance.
+
+**Decision.** Every seat update is published to the Redis channel
+`seatflow:seat-updates`. All instances subscribe, including the publisher, and
+each delivers to its own STOMP sessions.
+
+**Why not the alternative.** `enableStompBrokerRelay` with RabbitMQ or ActiveMQ
+is the heavier and more capable answer, and it means adding a whole piece of
+infrastructure for a feed where every message is disposable and a client recovers
+from a gap by re-fetching. Kafka was also rejected: consumer groups deliver to
+one member, which is the opposite of what a broadcast needs, and its poll
+interval would be added to a path where latency is the entire feature.
+
+**Consequences.** The publishing instance does not deliver locally *and* publish
+- that would double every message for its own clients. It publishes, and receives
+its own message back like everyone else, so there is one code path from "a seat
+changed" to "a browser was told". If the publish fails, it delivers locally and
+increments `seatflow_fanout_degraded_total`; other instances' clients recover
+through the sequence gap.
+
+---
+
+## 2026-08-25 - The broadcast sequence is a Redis counter, not a database column
+
+**Context.** The per-event `seq` was a local `AtomicLong`. Two instances would
+each start at 1, so a browser receiving from both sees 1, 1, 2, 2 - read as a gap
+by the client, which then re-fetches the whole seat map on every update.
+
+**Decision.** Redis `INCR` on `seatflow:seq:{eventId}`, with a 12 hour TTL.
+
+**Why not the alternative.** The database version - `UPDATE events SET
+seat_version = seat_version + 1` inside the reservation transaction - is durable
+and would be strictly ordered. It would also serialise every concurrent hold for
+one event behind a single row lock, which is a hotspot deliberately introduced
+into the exact path the project exists to keep fast. The counter is not
+correctness data and does not belong in that transaction.
+
+**Consequences.** If Redis is unreachable, each instance falls back to a local
+counter and clients see gaps - which makes them re-fetch, which is what a gap is
+supposed to trigger. An outage costs refetching, never a wrong seat map.
+
+---
+
+## 2026-08-25 - The admin bootstrap takes an advisory lock before reading
+
+**Context.** `AdminBootstrapRunner` checks whether the admin exists and creates
+it if not. On a fresh multi-instance deployment every instance reads "absent",
+every instance inserts, and all but one hit `uq_users_email_lower`. An
+`ApplicationRunner` that throws stops the application, so a bug that cannot
+happen on one node takes down most of a cluster on its first boot.
+
+**Decision.** Take `pg_try_advisory_xact_lock` **before** the read. An instance
+that cannot get it logs and skips.
+
+**Why not the alternative.** Catching `DataIntegrityViolationException` would
+also work, but the exception marks the transaction rollback-only, so the recovery
+path cannot then read the row it needs. Locking after the read fixes nothing -
+the whole point is that the SELECT and the INSERT must be the same instance's.
+
+**Consequences.** There is a test that fires eight concurrent bootstraps and
+asserts one account and no failures. It was confirmed to fail with the lock
+removed, so it is testing the fix rather than decorating it.
+
+---
+
+## 2026-08-25 - nginx resolves the backend at request time, not at startup
+
+**Context.** `docker compose up --scale backend=3` makes `backend` resolve to
+three addresses.
+
+**Decision.** A `resolver 127.0.0.11 valid=10s` directive and the hostname in a
+variable, instead of an `upstream { server backend:8080; }` block.
+
+**Why not the alternative.** nginx resolves an upstream once, at startup, and
+keeps the single address it got for the life of the process. Everything would go
+to whichever container answered first, the other replicas would sit idle, and
+scaling would look like it worked while doing nothing. Measured after the change:
+40 requests through nginx split 25/15 across two replicas.
+
+**Consequences.** No sticky sessions for WebSockets, deliberately. A socket stays
+on whichever instance answered the handshake and every instance receives every
+update, so needing stickiness would mean the fan-out was broken.
+
+---
+
+## 2026-08-25 - Every meter is tagged with the instance
+
+**Decision.** `InstanceIdentity` sets a Micrometer common tag from the container
+hostname.
+
+**Why not the alternative.** Untagged, two instances scraped into one Prometheus
+job produce a single series whose value flickers between two counters, and
+"which instance published those messages" stops being answerable. The hostname is
+the id because that is what `docker compose ps` shows.
+
+**Consequences.** Confirmed useful immediately: a booking made on backend-2 was
+confirmed by a consumer on backend-1, which is only visible because the two
+instances report separately.
+
+---
+
 ## 2026-08-25 - Domain events go through an outbox table, never straight to Kafka
 
 **Context.** Phase 8 needs `booking.confirmed`, `reservation.expired` and

@@ -38,7 +38,24 @@ spring:
     redis:
       host: ${SEATFLOW_REDIS_HOST:127.0.0.1}
       port: ${SEATFLOW_REDIS_PORT:6379}
-      timeout: 2s
+      # 1s, not the 2s this started as.
+      #
+      # Everything Redis is asked for here is a latency optimisation - a cached
+      # read model, a broadcast sequence, a fan-out publish - so if it has not
+      # answered within a second, falling through to PostgreSQL is faster than
+      # continuing to wait. Measured: with Redis stopped, a reservation took
+      # 6.05s at 2s, because the after-commit path makes three separate Redis
+      # calls and each waited out the full window.
+      #
+      # Do not push this much lower. At 500ms the whole integration suite failed
+      # to start: Lettuce applies the command timeout to connection
+      # initialization as well, and on a loaded machine the handshake needs more
+      # than half a second. That is also how the startup-dependency bug in
+      # RedisFanoutConfig was found, so the failure was worth having.
+      timeout: 1s
+      # TCP connect only, and generous. A slow connect should be retried, not
+      # treated as the cache being unusable.
+      connect-timeout: 3s
 
   kafka:
     bootstrap-servers: ${SEATFLOW_KAFKA_BOOTSTRAP:127.0.0.1:9092}

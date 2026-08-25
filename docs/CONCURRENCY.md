@@ -193,10 +193,33 @@ PostgreSQL, not Redis, so cleanup has no dependency on the cache tier.
 | Event and seat-map cache | Cache miss, read PostgreSQL. Slower, correct. |
 | Hold mirror and TTL keyspace hints | Sweeper still runs on the DB clock. No impact. |
 | Rate limiting | Fails open, or degrades to per-instance in-memory. |
-| WebSocket fan-out across instances | Single-instance broadcast still works; clients re-sync via REST on reconnect. |
+| Broadcast sequence counter | Falls back to a per-instance counter. Clients see gaps, and a gap already means "refetch over REST". |
+| Seat-update fan-out across instances | Falls back to delivering to this instance's own clients. Other instances' clients recover through the same gap. |
 
 If Redis were instead the lock, its failure would be a correctness incident. That
 inversion is the most defensible property of this design.
+
+**What it does cost.** Measured with the container stopped: reservations still
+returned 201, six seats were held correctly, and no seat was sold twice - at
+**3.05s each against 42ms healthy**; a seat map read went from 100ms to 1.02s.
+The after-commit path makes three separate Redis calls (sequence, fan-out, cache
+eviction) and each waits out the timeout; a seat map read makes one.
+
+That number was **6.05s** when first measured, on a 2s timeout. Everything Redis
+is asked for here is a latency optimisation, so waiting two seconds for it buys
+nothing - if it has not answered, PostgreSQL will answer faster. The timeout is
+now 1s.
+
+It is not lower because 500ms was tried and broke the build: Lettuce applies the
+command timeout to connection initialisation as well, and under load the
+handshake needs longer. That failure was worth having, because it is what exposed
+the startup-dependency bug in the fan-out subscription - see DECISIONS.
+
+The remaining three seconds is the honest residue, and it is a timeout choice
+rather than a design one. Removing it means moving the whole after-commit block
+off the request thread; that is a real improvement and it has not been made,
+because an async listener brings ordering and queue-saturation questions that a
+timeout change does not.
 
 ---
 

@@ -25,11 +25,19 @@ Not a benchmark rig. These numbers describe this laptop, not the design's ceilin
 | Database | PostgreSQL 16 in Docker, same WSL instance |
 | Load generator | k6 v0.54.0, same WSL instance |
 | Date | 2026-08-25 |
+| Commit | Phase 9, before Kafka existed |
 
 The backend was moved into WSL for these runs. Driving load from WSL to a
 Windows-hosted process crosses the Hyper-V bridge and Windows Firewall, which
 started dropping connections under load - that measures the network path, not the
 application. Same-host removes the variable.
+
+**These runs predate Phase 8.** The outbox relay now polls every 500ms and the
+Kafka producer is on the same JVM, so a rerun would not be comparing like with
+like. The reservation path itself is unchanged - a hold writes no outbox row,
+only a payment does - so the contention result stands, but the throughput figure
+should be re-measured before it is quoted against the current commit. It has not
+been, and is not claimed to have been.
 
 ## Run 1 - default pool (`maximum-pool-size: 20`)
 

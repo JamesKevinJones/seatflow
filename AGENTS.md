@@ -85,10 +85,14 @@ load/                                      k6 scenarios (Phase 9)
    Publishing before commit shows clients a state that may roll back. Anything
    that changes seat state must publish `SeatStatusChanged`, or both the live
    map and the Redis cache go stale.
-8. **Redis is never allowed to matter.** It holds read models only. Killing it
-   must leave reservations, expiry, and booking working - there is a check for
-   this in `docs/VERIFY.md`. A new cache must register its value type in
-   `CacheConfig`, or deserialization failures escape the `CacheErrorHandler`.
+8. **Redis is never allowed to matter.** It holds read models, the broadcast
+   sequence counter, and the seat-update fan-out channel - none of it
+   authoritative. Killing it must leave reservations, expiry, and booking
+   working; the sequence falls back to a local counter and the fan-out falls
+   back to local delivery, so clients refetch more and nothing is wrong. There
+   is a check in `docs/VERIFY.md` part 9. A new cache must register its value
+   type in `CacheConfig`, or deserialization failures escape the
+   `CacheErrorHandler`.
 9. **Fixtures go through the API, not the tables.** Faked identifiers have twice
    been rejected by foreign keys added in a later migration.
 10. **Kafka is never allowed to matter either.** Domain events are recorded to
@@ -100,7 +104,13 @@ load/                                      k6 scenarios (Phase 9)
 11. **Consumers must be idempotent.** Delivery is at-least-once. Anything with a
     side effect that is not naturally repeatable checks `messageId` against
     `ProcessedMessages` before acting.
-12. Match the surrounding code. Do not add dependencies without asking. Run the
+12. **Assume more than one instance.** The system runs behind
+    `--scale backend=N`. Anything scheduled takes an advisory lock, anything
+    queue-like uses `SKIP LOCKED`, anything broadcast goes through the Redis
+    fan-out channel rather than `SimpMessagingTemplate` directly, and no counter
+    that clients depend on may live in a field. These failures are all silent on
+    one node - `MultiInstanceIT` is where they get caught.
+13. Match the surrounding code. Do not add dependencies without asking. Run the
     checks in `docs/VERIFY.md` before reporting work as done.
 
 ## Commit rules

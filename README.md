@@ -87,7 +87,10 @@ Every number here was measured. Commands are in [docs/VERIFY.md](docs/VERIFY.md)
 | Lapsed hold, **sweeper disabled** | Reclaimable anyway |
 | A seat forced into a second booking | Refused by the database |
 | Full checkout suite with **Kafka stopped** | 22/22 pass, 4 bookings, 0 sold twice |
-| Full seat map with **Redis stopped** | Still 200, just slower |
+| Reservations with **Redis stopped** | Still 201, 4 held, 0 sold twice |
+| Reservations with **Redis never reachable** | App starts and sells seats |
+| **Two instances**, seat held on one | Both instances' clients notified, same `seq` |
+| **Two instances**, one booking | Exactly one confirmation, on the other node |
 
 **Load: 1,000 virtual users against 100 seats.** 75,868 requests at 1,018 req/s,
 median 79 ms, p95 953 ms — and **exactly 100 seats sold**. The test fails itself
@@ -97,7 +100,7 @@ Tripling the connection pool made throughput *33% worse*. The bottleneck was
 never the pool; it is row-lock contention on 100 rows. Both runs and the
 reasoning are in **[load/RESULTS.md](load/RESULTS.md)**.
 
-Test suite: 3 unit + 21 integration tests against real PostgreSQL, Redis and
+Test suite: 3 unit + 27 integration tests against real PostgreSQL, Redis and
 Kafka via Testcontainers. Plus 87 end-to-end API checks across four shell suites.
 
 ---
@@ -331,6 +334,38 @@ Full argument: **[docs/CONCURRENCY.md](docs/CONCURRENCY.md)**, part 8.
 
 ---
 
+## Running more than one instance
+
+```bash
+docker compose up --build --scale backend=3
+```
+
+Nothing else changes. That is the point of the section — the interesting part is
+what had to be true first, because none of it fails on a single node and none of
+it logs an error when it is wrong.
+
+| Concern | What makes it safe |
+| --- | --- |
+| Live seat updates | Published to a Redis channel every instance subscribes to, so each tells its own browsers |
+| Broadcast sequence | Redis `INCR`, one counter per event cluster-wide — a local one would make clients refetch on every message |
+| Expiry sweeper | `pg_try_advisory_xact_lock`, non-blocking, released at commit |
+| Outbox relay | `FOR UPDATE SKIP LOCKED` — every instance runs one and each takes a disjoint batch, no leader |
+| Domain events | One Kafka consumer group, so a confirmation is sent once and not once per node |
+| Admin bootstrap | Advisory lock taken **before** the read, or every instance inserts and all but one hit the unique index at startup |
+| Load balancing | nginx re-resolves `backend` through Docker DNS per request; a static `upstream` resolves once and pins to one replica |
+| Metrics | Every meter tagged with the instance, so two nodes are two series |
+
+Measured on a two-instance run: a hold placed through the load balancer reached
+STOMP clients connected to **both** instances, carrying the same `seq` — and a
+booking made on one node had its confirmation sent by a consumer on the other.
+Exactly one instance reported the expiry sweep.
+
+WebSocket connections need no stickiness. A socket stays on whichever instance
+answered the handshake and every instance receives every update; needing sticky
+sessions would mean the fan-out was broken.
+
+---
+
 ## Layout
 
 ```
@@ -338,7 +373,7 @@ backend/     Spring Boot, one package per domain module
 frontend/    React 19 + Vite + Tailwind 4
 infra/       databases only, for IDE development
 load/        k6 contention scenario and measured results
-scripts/     end-to-end API verification suites
+scripts/     end-to-end API suites, plus a dependency-free STOMP probe
 docs/        the reasoning
 ```
 
@@ -358,10 +393,17 @@ docs/        the reasoning
 Stated plainly, because a portfolio project that pretends to be production-ready
 is less convincing than one that knows what it is.
 
-- **Single instance.** The WebSocket broker is Spring's in-memory one and the
-  per-event sequence counter is a local `AtomicLong`. A second instance would
-  broadcast only to its own clients. The expiry sweeper's advisory lock is
-  written for multi-instance but has never been run that way.
+- **A Redis outage costs ~3s per reservation.** Correctness is untouched —
+  measured with the container stopped, reservations still succeeded and no seat
+  was sold twice — but the after-commit path makes three Redis calls and each
+  waits out the 1s timeout. It was 6.05s at the original 2s, and is not tuned
+  lower because 500ms broke the build. Removing it means moving after-commit work
+  off the request thread, which is not done.
+- **One broker node, one Redis node, one database.** The application scales
+  horizontally; its infrastructure here does not. PostgreSQL has no replica,
+  Redis has no sentinel, and Kafka has one node — each is a single point of
+  failure that a real deployment would address, and none of them is addressed by
+  running more application instances.
 - **Payment is simulated.** No provider integration. The consistency design
   around it is real; the charge is not.
 - **The Kafka broker has no volume.** One node, no replicas, log stored in the

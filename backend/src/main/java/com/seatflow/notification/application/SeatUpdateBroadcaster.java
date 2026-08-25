@@ -1,48 +1,36 @@
 package com.seatflow.notification.application;
 
 import com.seatflow.event.application.SeatStatusChanged;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.messaging.simp.SimpMessagingTemplate;
+import com.seatflow.notification.infrastructure.SeatUpdateFanout;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
-import java.time.Instant;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Pushes seat changes to everyone looking at that event's seat map.
- * <p>
- * <b>{@code AFTER_COMMIT} is the whole point of this class.</b> A plain
+ * Turns a committed seat change into a message for everyone watching that map.
+ *
+ * <p><b>{@code AFTER_COMMIT} is the whole point of this class.</b> A plain
  * {@code @EventListener} would fire inside the transaction, so a hold that then
  * rolled back would still have told every watching browser the seat was gone.
  * The seat map would be wrong until someone reloaded, and the bug would only
  * show up under the contention that causes rollbacks in the first place.
+ *
+ * <p>What it does <i>not</i> do is deliver anything. The update goes to
+ * {@link SeatUpdateFanout}, which publishes it to every instance in the cluster,
+ * and each instance delivers to its own subscribers. This class stayed the same
+ * shape when the system went multi-instance; only the last line changed.
  */
 @Component
 public class SeatUpdateBroadcaster {
 
-    private static final Logger log = LoggerFactory.getLogger(SeatUpdateBroadcaster.class);
+    private final SeatUpdateSequence sequence;
+    private final SeatUpdateFanout fanout;
 
-    /**
-     * Per-event message counter, so a client can tell it missed something.
-     * <p>
-     * In memory, which is correct for one instance and wrong for several - a
-     * second instance would start its own sequence and clients would see the
-     * numbers go backwards. Multi-instance needs a shared source, alongside the
-     * broker relay noted in WebSocketConfig.
-     */
-    private final Map<UUID, AtomicLong> sequences = new ConcurrentHashMap<>();
-
-    private final SimpMessagingTemplate messaging;
-
-    public SeatUpdateBroadcaster(SimpMessagingTemplate messaging) {
-        this.messaging = messaging;
+    public SeatUpdateBroadcaster(SeatUpdateSequence sequence, SeatUpdateFanout fanout) {
+        this.sequence = sequence;
+        this.fanout = fanout;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -51,38 +39,16 @@ public class SeatUpdateBroadcaster {
             return;
         }
 
-        long seq = sequences
-                .computeIfAbsent(change.eventId(), key -> new AtomicLong())
-                .incrementAndGet();
+        // Numbered from a cluster-wide counter, not a field on this object. Two
+        // instances with their own counters would send a browser 1, 1, 2, 2 and
+        // it would resync on every message.
+        long seq = sequence.next(change.eventId());
 
-        SeatUpdate update = new SeatUpdate(
+        fanout.publish(new SeatUpdate(
                 change.eventId(),
                 change.eventSeatIds().stream().map(UUID::toString).toList(),
                 change.status().name(),
                 seq,
-                change.at());
-
-        messaging.convertAndSend(destinationFor(change.eventId()), update);
-        log.debug("Broadcast #{} to event {}: {} seat(s) -> {}",
-                seq, change.eventId(), change.eventSeatIds().size(), change.status());
-    }
-
-    private static String destinationFor(UUID eventId) {
-        return "/topic/events/" + eventId + "/seats";
-    }
-
-    /**
-     * A delta, not a snapshot.
-     *
-     * @param seq monotonic per event. A client that sees a gap has missed a
-     *            message and should re-fetch the whole map over REST rather than
-     *            keep applying deltas to a map it can no longer trust.
-     */
-    public record SeatUpdate(
-            UUID eventId,
-            List<String> seatIds,
-            String status,
-            long seq,
-            Instant at) {
+                change.at()));
     }
 }
