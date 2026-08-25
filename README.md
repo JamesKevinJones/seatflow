@@ -98,7 +98,9 @@ if the ledger is ever oversold.
 
 Tripling the connection pool made throughput *33% worse*. The bottleneck was
 never the pool; it is row-lock contention on 100 rows. Both runs and the
-reasoning are in **[load/RESULTS.md](load/RESULTS.md)**.
+reasoning are in **[load/RESULTS.md](load/RESULTS.md)** — including the note that
+these runs predate Kafka, so the throughput figure is not claimed against the
+current commit.
 
 Test suite: 3 unit + 27 integration tests against real PostgreSQL, Redis and
 Kafka via Testcontainers. Plus 87 end-to-end API checks across four shell suites,

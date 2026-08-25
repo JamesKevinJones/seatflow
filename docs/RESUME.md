@@ -45,11 +45,13 @@ first one is the project.
   full checkout suite: 22 of 22 passed, no seat sold twice, and the backlog
   drained in 9 seconds when the broker returned.
 
-- **Took a single-instance application horizontal**, finding and fixing four
+- **Took a single-instance application horizontal**, finding and fixing five
   failure modes that are silent on one node: per-instance WebSocket broadcasts,
   a per-instance sequence counter, a startup race that would have crashed every
-  replica but one, and an nginx upstream that resolves once and pins all traffic
-  to a single container.
+  replica but one, an nginx upstream that resolves once and pins all traffic to
+  a single container, and — found by tightening a timeout until the test suite
+  broke — a Redis listener that made the cache an *availability* dependency, so
+  an unreachable Redis stopped the application from starting at all.
 
 ## One-line project summary
 
@@ -100,13 +102,22 @@ one commit; a relay moves it afterwards. The cost is at-least-once delivery,
 which is why every message carries an id and consumers check it before acting.
 
 **"What broke when you ran a second instance?"**
-Four things, none of which logged an error. Spring's simple STOMP broker only
+Five things, none of which logged an error. Spring's simple STOMP broker only
 knows its own JVM's sessions, so a user on instance B never heard about a seat
 taken on instance A. The sequence counter was a local `AtomicLong`, so clients
 saw 1, 1, 2, 2 and refetched the whole map on every update. The admin bootstrap
 had every instance read "absent" and insert, so all but one hit the unique index
 and failed to start. And nginx resolves an `upstream` block once at startup, so
 every request went to one replica while scaling appeared to work.
+
+The fifth is the one I'd actually talk about. Adding the cross-instance fan-out
+put a listener on a Redis container that opens its subscription during context
+refresh — so an unreachable Redis threw and the application would not start. A
+cache had become an availability dependency, which is the exact coupling the
+whole design avoids, and no test could see it because every integration test runs
+with a real Redis. It only appeared when I tightened the Redis timeout and all 24
+integration tests failed to boot at once. There is now a test that points the app
+at a closed port and asserts it starts and still sells seats.
 
 **"What would you do differently at scale?"**
 The measured bottleneck is row-lock contention, so the lever is doing less work
