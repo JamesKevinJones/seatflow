@@ -5,6 +5,66 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-25 - Only the frontend port is published
+
+**Context.** The compose stack has four services. The obvious setup publishes
+each one's port so they are easy to poke at.
+
+**Decision.** Only nginx is published. PostgreSQL, Redis, and the backend are
+reachable only on the internal compose network, and nginx proxies `/api` and
+`/ws` to the backend.
+
+**Why not the alternative.** Publishing the backend would mean the browser making
+cross-origin requests, which means a CORS policy - and permissive dev CORS has a
+habit of surviving into production. Keeping everything same-origin means there is
+no policy to get wrong. Publishing the database is simply a way to get it
+compromised.
+
+**Consequences.** `/actuator/*` is not reachable from outside either, which is
+correct but surprising: nginx serves `index.html` for unmatched paths, so
+requesting it returns **200 with an HTML body**. That misleading success cost
+time during verification - check the body, not the status.
+
+---
+
+## 2026-08-25 - Container healthchecks use 127.0.0.1, not localhost
+
+**Context.** The frontend container reported unhealthy while serving traffic
+perfectly. The healthcheck said "connection refused" against
+`http://localhost/`.
+
+**Decision.** Healthchecks name `127.0.0.1`.
+
+**Why not the alternative.** Inside the container `localhost` resolves to `::1`
+first, and nginx listens on IPv4 only. This is the same trap as the WSL port
+relay, in a different place - which suggests treating bare `localhost` as
+suspicious anywhere a health check or a config value is involved.
+
+**Consequences.** An unhealthy container blocks anything with a
+`depends_on: service_healthy`, so this failure mode stops the stack rather than
+merely looking untidy.
+
+---
+
+## 2026-08-25 - springdoc 3.x, and secrets have no defaults in compose
+
+**Context.** OpenAPI generation needs a springdoc line that targets Boot 4 - the
+2.x line is for Boot 3 and will not start. Compose also needs a JWT signing key
+and an admin password.
+
+**Decision.** `springdoc-openapi-starter-webmvc-ui:3.1.0`, and compose declares
+both secrets with `${VAR:?message}` so the stack refuses to start without them.
+
+**Why not the alternative.** A default signing key that works out of the box is a
+guessable signing key in every deployment that forgot to change it. A failed boot
+with a clear message is the better outcome, and `.env.example` documents what to
+set.
+
+**Consequences.** `docker compose up` fails until `.env` exists. That is the
+intended behaviour and the README says so.
+
+---
+
 ## 2026-08-25 - Cached values are serialized as their exact type
 
 **Context.** The obvious Redis cache setup uses a generic Object serializer.

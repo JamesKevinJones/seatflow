@@ -54,12 +54,25 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        # prometheus is the scrape endpoint. It stays behind the ADMIN role like
+        # the rest of actuator - a scraper authenticates like any other client.
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when-authorized
       probes:
         enabled: true
+  metrics:
+    tags:
+      application: seatflow
+
+springdoc:
+  swagger-ui:
+    path: /docs
+    operations-sorter: method
+    tags-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
 
 seatflow:
   reservation:

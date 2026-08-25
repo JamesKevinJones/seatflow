@@ -61,6 +61,19 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID> 
     int markLapsedAsExpired(@Param("now") Instant now);
 
     /**
+     * Holds that are still live: ACTIVE and not yet past their expiry. Both
+     * conditions matter, because the sweeper may not have run yet.
+     * <p>
+     * Backs the {@code seatflow.reservations.active} gauge.
+     */
+    @Query("""
+            select count(r) from Reservation r
+             where r.status = com.seatflow.reservation.domain.ReservationStatus.ACTIVE
+               and r.expiresAt > :now
+            """)
+    long countLive(@Param("now") Instant now);
+
+    /**
      * Advisory lock so only one instance sweeps at a time.
      * <p>
      * {@code pg_try_advisory_xact_lock} is non-blocking and releases at commit,

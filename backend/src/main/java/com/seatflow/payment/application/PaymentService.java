@@ -2,6 +2,7 @@ package com.seatflow.payment.application;
 
 import com.seatflow.booking.application.BookingService;
 import com.seatflow.booking.domain.Booking;
+import com.seatflow.common.config.SeatFlowMetrics;
 import com.seatflow.common.exception.ApiException;
 import com.seatflow.common.exception.ErrorCode;
 import com.seatflow.payment.domain.Payment;
@@ -33,15 +34,18 @@ public class PaymentService {
     private final PaymentLedger ledger;
     private final SimulatedPaymentGateway gateway;
     private final BookingService bookingService;
+    private final SeatFlowMetrics metrics;
 
     public PaymentService(
             PaymentLedger ledger,
             SimulatedPaymentGateway gateway,
-            BookingService bookingService) {
+            BookingService bookingService,
+            SeatFlowMetrics metrics) {
 
         this.ledger = ledger;
         this.gateway = gateway;
         this.bookingService = bookingService;
+        this.metrics = metrics;
     }
 
     /**
@@ -73,6 +77,7 @@ public class PaymentService {
                 gateway.charge(payment.getAmountCents(), request.paymentMethod());
 
         if (!result.successful()) {
+            metrics.bookingFailed();
             ledger.abandon(payment.getId(), result.failureReason());
             throw new ApiException(ErrorCode.PAYMENT_DECLINED, result.failureReason())
                     .with("paymentId", payment.getId().toString())
@@ -81,11 +86,13 @@ public class PaymentService {
 
         try {
             Booking booking = ledger.settle(payment.getId(), result.providerReference());
+            metrics.bookingConfirmed();
             return bookingService.describe(booking.getId());
         } catch (RuntimeException e) {
             // The charge went through but the booking did not. Settle the
             // payment as failed - in a real system this is also where the
             // refund would be issued - and tell the caller the truth.
+            metrics.bookingFailed();
             ledger.abandon(payment.getId(),
                     "Charge accepted but the seats could not be confirmed: " + e.getMessage());
             log.error("Payment {} succeeded at the gateway but could not be booked", payment.getId(), e);

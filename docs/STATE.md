@@ -7,27 +7,23 @@
 
 ## Where things stand
 
-**Phases 0 through 9 are done. The product works end to end and the guarantee it
-exists for is proven under load.**
+**Phases 0 to 7, 9 and 10 are done. Only Phase 8 (Kafka) remains.**
 
-A visitor can browse events, open a seat map that updates live as other people
-take seats, choose up to eight, sign in, hold them against a ten-minute
-countdown, pay, and get a booking reference. A declined card keeps the hold. A
-seat lost to someone else is named in the error and greyed out while the rest of
-the selection survives.
+The system is complete and packaged. `docker compose up --build` brings up
+PostgreSQL, Redis, the backend, and an nginx-served frontend, and the whole
+product works from `http://localhost:8088`: browse, watch the seat map update
+live, hold seats against a countdown, pay, get a booking reference.
 
 Everything below was measured, not assumed:
 
 - `./mvnw verify` in WSL: **3 surefire + 15 failsafe, 0 failures**
-- **Load: 1,000 users against 100 seats - 75,868 requests at 1,018 req/s, and
-  exactly 100 seats sold.** Full numbers, including a tuning experiment that made
-  things worse, in `load/RESULTS.md`
-- Shell suites: auth 15, catalogue 29, reservations 21, checkout 22 - all passing
-- Browser: live seat map moved 155 to 150 available when another customer took
-  five seats, with no refetch on the watching page
-- **Redis stopped mid-flight: seat map still 200, reservation still 201**
-
-Remaining phases: **8 (Kafka)** and **10 (Docker, metrics, README, diagrams)**.
+- **Load: 1,000 users against 100 seats - 1,018 req/s, exactly 100 sold.** See
+  `load/RESULTS.md`, including a tuning attempt that made things worse
+- Shell suites: auth 15, catalogue 29, reservations 21, checkout 22
+- **Against the containerised stack**: checkout 22 and reservations 21 pass
+  unchanged, and all four services report healthy
+- Metrics move with real traffic: 8 requests, 1 conflict, 2 bookings, 1 failure
+- Redis stopped mid-flight: seat map still 200, reservation still 201
 
 ## In progress
 
@@ -35,70 +31,71 @@ Nothing half-done.
 
 ## The exact next step
 
-Pick one:
+**Phase 8, Kafka**, is all that is left of the original plan.
 
-- **Phase 10** is the higher-value one now. The system works; what is missing is
-  the packaging that lets someone else run it - a compose file that starts the
-  whole stack, Actuator metrics for the counters named in the brief
-  (`reservation_conflicts_total` and friends), a real README, and an architecture
-  diagram. This is also what a reader looks at first.
-- **Phase 8 (Kafka)** would add `BookingConfirmed` and `ReservationExpired`
-  topics with in-process consumers. Do it through a **transactional outbox**:
-  `SeatStatusChanged` already fires after commit, but publishing to Kafka inside
-  the booking transaction is a dual write that eventually loses events or emits
-  ones for transactions that rolled back. V6 was reserved for the outbox table.
+Do it through a **transactional outbox**, not a direct publish.
+`SeatStatusChanged` already fires after commit and drives the WebSocket feed and
+cache invalidation, but writing to Kafka inside the booking transaction is a dual
+write: it eventually loses events, or emits events for transactions that rolled
+back. `V6__outbox.sql` is the reserved slot.
+
+1. `outbox` table written in the same transaction as the booking.
+2. A relay polls it and publishes to `booking.confirmed`,
+   `reservation.expired`, `payment.completed`.
+3. Consumers stay in-process for now - the brief is explicit that this
+   demonstrates event-driven architecture, not microservices.
+
+If not Kafka, the highest-value remaining work is **making it multi-instance**:
+a STOMP broker relay and a shared sequence source. That is the honest gap between
+this and something that could actually be deployed behind more than one node.
 
 ## Open questions
 
-- **Deployment.** Vercel suits the frontend but cannot host Spring Boot; the
-  backend needs a container host plus managed Postgres and Redis. Free tiers
-  sleep, which makes a shared link cold-start or fail.
-- **CORS is still unconfigured** - the Vite dev proxy hides it, and a deployed
-  frontend on another origin will need it. The WebSocket endpoint likewise
-  currently allows any origin pattern.
-- **Single instance only.** The WebSocket broker is Spring's in-memory one and
-  the per-event sequence counter is a local `AtomicLong`; a second instance would
-  broadcast only to its own clients and restart the sequence. The expiry
-  sweeper's advisory lock is written for multi-instance but has never been run
-  that way.
-- **Token storage** is localStorage; an httpOnly refresh cookie needs a backend
-  change.
-- **Redis timeout is 2s**, so a Redis outage adds two seconds to the first
-  request that tries the cache. Lowering it would degrade faster.
+- **Deployment.** Vercel suits the frontend but cannot host Spring Boot. The
+  compose stack is deployable to any container host; free tiers sleep, which
+  makes a shared link cold-start or fail.
+- **Single instance only.** In-memory STOMP broker, local `AtomicLong` sequence.
+  The sweeper's advisory lock is written for multi-instance but never run that
+  way.
+- **Refresh tokens in localStorage.** An httpOnly cookie needs a backend change.
+- **Redis timeout is 2s**, so an outage adds two seconds to the first request
+  that tries the cache.
+- **`docs/API.md` does not exist** - the OpenAPI document at `/docs` is generated
+  instead, which is better but only available when the app is running.
 
 ## Known traps
 
 Ordered by how much time they cost.
 
-- **WSL terminates seconds after the last command exits**, taking PostgreSQL and
-  Redis with it. Start `wsl -e bash -lc "sleep infinity" &` first.
+- **WSL terminates seconds after the last command exits**, taking the databases
+  with it. Start `wsl -e bash -lc "sleep infinity" &` first.
+- **nginx returns 200 with `index.html` for unmatched paths.** A request to an
+  unproxied path such as `/actuator/prometheus` looks like it succeeded. Check
+  the body, not the status.
+- **Use `127.0.0.1`, not `localhost`, in healthchecks and configs.** It bit twice
+  in different places: the WSL port relay and the nginx container both listen on
+  IPv4 while `localhost` resolves to `::1` first.
 - **CSS transitions freeze when the Browser pane is hidden**, so
   `getBoundingClientRect` returns mid-transition values. Inject
   `*{transition:none !important}` before measuring layout.
-- **Load tests must run with the backend inside WSL.** Driving load from WSL at a
-  Windows-hosted process gets throttled by Windows Firewall and measures the
-  bridge, not the app.
-- **Do not tune the connection pool up to fix latency.** It was measured: 20 to
-  60 made throughput 33% worse. The contention is PostgreSQL row locks.
+- **Load tests must run with the backend inside WSL**, or Windows Firewall
+  throttles the bridge and you measure the network.
+- **Do not tune the connection pool up to fix latency.** Measured: 20 to 60 made
+  throughput 33% worse. The contention is PostgreSQL row locks.
 - **Sizing a concurrency-test thread pool below the task count deadlocks the
   build** - one thread per caller.
-- **`mvn test` silently skips every `*IT`** and still prints BUILD SUCCESS. Use
-  `mvn verify`. Expected: 3 surefire, 15 failsafe.
-- **A new cache needs its value type registering** in `CacheConfig`. A generic
-  serializer returns `LinkedHashMap` and the failure lands *outside* the
-  `CacheErrorHandler`, turning a cache problem into a 500.
-- **Anything that changes seat state must publish `SeatStatusChanged`**, or the
-  live map and the cache both go stale.
-- **Fixtures must go through the API, not the tables.** Faked
-  `held_by_reservation_id` and `booking_id` values were rejected by V4's and V5's
-  foreign keys when they arrived.
-- **An entity with an assigned id makes Spring Data issue an UPDATE, not an
-  INSERT**, so `@PrePersist` never runs and audit columns stay null.
-- **`npm --prefix <path> run dev`**, not `npm run dev --prefix <path>`.
-- **`.claude/launch.json` must use the 8.3 short path**; that is also why
-  `server.fs.strict` is off.
-- **The WSL port relay is IPv4-only**; configs name `127.0.0.1` deliberately.
-- **A catch-all `@ExceptionHandler(Exception)` swallows security exceptions.**
+- **`mvn test` silently skips every `*IT`.** Use `mvn verify`. Expected: 3
+  surefire, 15 failsafe.
+- **A new cache needs its value type registering** in `CacheConfig`, or a generic
+  serializer returns `LinkedHashMap` and the failure lands outside the
+  `CacheErrorHandler`.
+- **Anything that changes seat state must publish `SeatStatusChanged`**, or both
+  the live map and the cache go stale.
+- **Fixtures must go through the API, not the tables.** Faked identifiers were
+  rejected by V4's and V5's foreign keys when they arrived.
+- **An entity with an assigned id makes Spring Data issue an UPDATE**, so
+  `@PrePersist` never runs and audit columns stay null.
+- **springdoc 3.x for Boot 4**; the 2.x line will not start.
 - **Boot 4 is not Boot 3**: `-webmvc` not `-web`, Jackson is `tools.jackson`.
 - **Never test concurrency on H2**, and never mark a concurrency test
   `@Transactional`.

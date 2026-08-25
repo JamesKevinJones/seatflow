@@ -1,0 +1,20 @@
+# Container profile.
+#
+# Everything that differs from local development is here, and every secret comes
+# from the environment - see docker-compose.yml.
+
+logging:
+  # JSON to stdout, so a log collector can parse fields instead of regexing
+  # human-formatted lines. Boot renders this natively; no logback XML needed.
+  structured:
+    format:
+      console: ecs
+  level:
+    com.seatflow: INFO
+
+management:
+  endpoint:
+    health:
+      # The container healthcheck reads this unauthenticated, and it is on an
+      # unpublished port inside the compose network.
+      show-details: never

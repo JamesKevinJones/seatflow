@@ -72,6 +72,10 @@ public class SecurityConfig {
                         // WebSocketConfig registers no inbound destination, so
                         // there is no way to command anything over this socket.
                         .requestMatchers("/ws/**").permitAll()
+                        // The API reference. Public because this is a portfolio
+                        // project and the API surface is meant to be read; a
+                        // real deployment would gate it or not ship it at all.
+                        .requestMatchers("/docs/**", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         // Liveness and readiness are consumed by orchestrators.
                         .requestMatchers("/actuator/health/**").permitAll()
                         .requestMatchers("/actuator/**").hasRole("ADMIN")

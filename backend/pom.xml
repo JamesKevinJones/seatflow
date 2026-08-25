@@ -58,6 +58,27 @@
 			<artifactId>flyway-database-postgresql</artifactId>
 		</dependency>
 
+		<!--
+			Prometheus scrape endpoint under /actuator/prometheus. Version comes
+			from the Spring Boot BOM so it always matches the Micrometer core
+			that Actuator already pulls in.
+		-->
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
+		</dependency>
+
+		<!--
+			OpenAPI document and Swagger UI, generated from the controllers.
+			springdoc 3.x is the line that targets Spring Boot 4; the 2.x line is
+			for Boot 3 and will not start here.
+		-->
+		<dependency>
+			<groupId>org.springdoc</groupId>
+			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+			<version>3.1.0</version>
+		</dependency>
+
 		<dependency>
 			<groupId>org.postgresql</groupId>
 			<artifactId>postgresql</artifactId>

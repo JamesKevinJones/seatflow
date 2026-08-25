@@ -1,0 +1,88 @@
+# The whole system, from nothing.
+#
+#   docker compose up --build
+#   open http://localhost:8088
+#
+# This is the full stack, unlike infra/docker-compose.dev.yml which starts only
+# the databases so the backend and frontend can run from an IDE.
+#
+# On this machine Docker lives in WSL, so run it from there. See docs/VERIFY.md.
+
+name: seatflow
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: seatflow
+      POSTGRES_USER: seatflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-seatflow}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seatflow -d seatflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Not published. Nothing outside this network has any business reaching the
+    # database directly.
+    expose:
+      - "5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--notify-keyspace-events", "Ex"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    expose:
+      - "6379"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      SEATFLOW_DB_URL: jdbc:postgresql://postgres:5432/seatflow
+      SEATFLOW_DB_USER: seatflow
+      SEATFLOW_DB_PASSWORD: ${POSTGRES_PASSWORD:-seatflow}
+      SEATFLOW_REDIS_HOST: redis
+      # No default. The application refuses to start without one rather than
+      # falling back to something guessable - see JwtProperties.
+      SEATFLOW_JWT_SECRET: ${SEATFLOW_JWT_SECRET:?set SEATFLOW_JWT_SECRET, at least 32 characters}
+      SEATFLOW_ADMIN_EMAIL: ${SEATFLOW_ADMIN_EMAIL:-admin@seatflow.local}
+      SEATFLOW_ADMIN_PASSWORD: ${SEATFLOW_ADMIN_PASSWORD:?set SEATFLOW_ADMIN_PASSWORD}
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      # Waits for healthy, not merely started. Flyway runs at boot and a
+      # database that is still initialising would fail the migration.
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8080"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    # The only published port. Everything else is reachable only from inside
+    # this network, and nginx proxies /api and /ws to the backend so the browser
+    # stays same-origin and CORS never enters the picture.
+    ports:
+      - "${SEATFLOW_PORT:-8088}:80"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:

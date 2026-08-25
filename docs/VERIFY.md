@@ -303,3 +303,71 @@ more slowly. Anything else means something has started depending on the cache.
 
 - `./mvnw test` **from Windows** fails at Docker discovery. By design - run
   integration tests in WSL, per part 3.
+
+---
+
+## 10. The whole stack in containers
+
+This is what someone cloning the repository runs. Docker lives in WSL on this
+machine, so run it from there.
+
+```bash
+cp .env.example .env      # set SEATFLOW_JWT_SECRET and SEATFLOW_ADMIN_PASSWORD
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose up -d --build"
+```
+
+All four services must report **healthy**:
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose ps"
+```
+
+Then check the app answers on the only published port, through nginx:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}
+' http://localhost:8088/
+curl -s -o /dev/null -w '%{http_code}
+' http://localhost:8088/api/v1/events
+curl -s -o /dev/null -w '%{http_code}
+' http://localhost:8088/docs
+```
+
+The API suites run against it unchanged:
+
+```bash
+SEATFLOW_BASE_URL=http://localhost:8088 SEATFLOW_ADMIN_PASSWORD=<yours>   bash scripts/verify-checkout.sh
+```
+
+Last full run against containers: checkout 22 passed, reservations 21 passed.
+
+**Beware a misleading 200.** nginx serves `index.html` for unknown paths, so
+`curl http://localhost:8088/actuator/prometheus` returns 200 with an HTML body.
+That is the SPA fallback, not actuator. Check the body, not just the status.
+
+---
+
+## 11. Metrics
+
+Actuator is not proxied through nginx, so metrics are reached inside the
+network. Everything except the health probes requires the ADMIN role.
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T backend sh -c 'curl -s -o /dev/null -w \"%{http_code}
+\" http://127.0.0.1:8080/actuator/prometheus'"
+```
+
+Expect **401** without a token and **200** with an admin one. Five application
+metrics must be present, and must move after traffic:
+
+```
+seatflow_reservation_requests_total
+seatflow_reservation_conflicts_total
+seatflow_booking_success_total
+seatflow_booking_failures_total
+seatflow_reservations_active
+```
+
+Last run, after the checkout and reservation suites: 8 requests, 1 conflict,
+2 bookings, 1 failure, 2 active holds - which matches exactly what those suites
+do. A counter registered but never incremented is worse than no counter.

@@ -1,5 +1,6 @@
 package com.seatflow.reservation.application;
 
+import com.seatflow.common.config.SeatFlowMetrics;
 import com.seatflow.common.exception.ApiException;
 import com.seatflow.common.exception.ErrorCode;
 import com.seatflow.common.exception.SeatsUnavailableException;
@@ -43,17 +44,20 @@ public class ReservationService {
     private final SeatAllocationPort seatAllocation;
     private final EventService eventService;
     private final ApplicationEventPublisher events;
+    private final SeatFlowMetrics metrics;
 
     public ReservationService(
             ReservationRepository reservationRepository,
             SeatAllocationPort seatAllocation,
             EventService eventService,
-            ApplicationEventPublisher events) {
+            ApplicationEventPublisher events,
+            SeatFlowMetrics metrics) {
 
         this.reservationRepository = reservationRepository;
         this.seatAllocation = seatAllocation;
         this.eventService = eventService;
         this.events = events;
+        this.metrics = metrics;
     }
 
     /**
@@ -67,6 +71,8 @@ public class ReservationService {
      */
     @Transactional
     public ReservationResponse reserve(UUID userId, ReserveRequest request, String idempotencyKey) {
+        metrics.reservationRequested();
+
         // Duplicates collapsed, order fixed. Sorting is cheap insurance: two
         // requests for an overlapping set then present their ids in the same
         // order, which keeps lock acquisition order stable.
@@ -121,6 +127,7 @@ public class ReservationService {
             // Which seats were lost is worked out by the exception handler,
             // after this transaction is gone.
             log.debug("Hold lost for event {}: claimed {} of {}", event.getId(), claimed, seatIds.size());
+            metrics.reservationConflicted();
             throw new SeatsUnavailableException(event.getId(), seatIds);
         }
 

@@ -1,42 +1,320 @@
 # SeatFlow
 
-A high-concurrency event ticket reservation platform.
+A high-concurrency event ticket reservation platform. Browse events, pick seats
+from a map that updates live as other people take them, hold your seats against
+a countdown, pay, and get a booking reference.
 
-Users browse events, pick seats from a live seat map, hold them for a limited
-window, pay, and receive a confirmed booking. Admins manage venues, seat layouts,
-events, and pricing.
+**Java 21 · Spring Boot 4 · PostgreSQL 16 · Redis 7 · React 19 · Docker**
 
-## The actual problem
+---
 
-When 10,000 people reach for 100 seats at the same instant, exactly one person
+## The problem this exists to solve
+
+When 1,000 people reach for 100 seats at the same instant, exactly one person
 gets each seat, and the database never ends up inconsistent.
 
-That is the engineering problem this project exists to solve. Redis, Kafka, and
-WebSockets are here to make the product real, but they are deliberately kept
-**out of the correctness path** - PostgreSQL alone decides who owns a seat, and
-a unique index makes double-selling structurally impossible.
+That is the whole project. Redis, WebSockets, and the rest make it a real
+product, but they are deliberately kept **out of the correctness path** —
+PostgreSQL alone decides who owns a seat.
 
-Read [`docs/CONCURRENCY.md`](docs/CONCURRENCY.md) for the full argument.
+### The race
 
-## Stack
+Check-then-act. Two requests for seat A12:
 
-Java 21 - Spring Boot 3 - PostgreSQL 16 - Redis 7 - Kafka - Flyway - React 19 +
-Vite + TypeScript + Tailwind - Docker - Testcontainers - k6
+```
+T1: SELECT status FROM event_seats WHERE id=A12   ->  AVAILABLE
+T2: SELECT status FROM event_seats WHERE id=A12   ->  AVAILABLE
+T1: UPDATE event_seats SET status='RESERVED' WHERE id=A12
+T2: UPDATE event_seats SET status='RESERVED' WHERE id=A12
+                          ^ both commit. Both clients think they won.
+```
 
-## Status
+No isolation level fixes this as written — the second UPDATE has no predicate
+that can fail. Raising the isolation level is not the answer; changing the shape
+of the statement is.
 
-**Phase 0 of 10 complete.** Architecture, schema, and concurrency design are
-documented. No code yet. See [`docs/STATE.md`](docs/STATE.md) for exactly where
-things stand and what happens next.
+### The fix
 
-## Documentation
+Collapse check and act into one statement and let the database arbitrate:
 
-| Document | What it answers |
+```sql
+UPDATE event_seats
+   SET status = 'RESERVED', held_by_reservation_id = :reservationId, held_until = :expiresAt
+ WHERE event_id = :eventId
+   AND id IN (:seatIds)
+   AND ( status = 'AVAILABLE'
+      OR (status = 'RESERVED' AND held_until < now()) );   -- lapsed holds are free
+```
+
+Under READ COMMITTED, a blocked UPDATE **re-evaluates its WHERE clause against
+the newly committed row**. Because the clause requires the seat to still be
+claimable, the loser matches zero rows. The affected-row count is the verdict:
+
+```java
+int claimed = seatAllocation.tryHold(eventId, seatIds, reservationId, expiresAt);
+if (claimed != seatIds.size()) {
+    throw new SeatsUnavailableException(eventId, seatIds);  // rolls back ALL of them
+}
+```
+
+One transaction, so a partial hold is impossible — you get every seat you asked
+for or none, which is what "A12 and A13 together" means to a person.
+
+Underneath it all, one index makes overselling structurally impossible:
+
+```sql
+CREATE UNIQUE INDEX uq_booking_seat_once ON booking_seats (event_seat_id);
+```
+
+A `booking_seats` row exists only for a confirmed booking, so a seat can appear
+in at most one booking ever. Every layer above can be broken and the database
+still refuses.
+
+Full argument, including failure modes: **[docs/CONCURRENCY.md](docs/CONCURRENCY.md)**.
+
+---
+
+## Proof, not claims
+
+Every number here was measured. Commands are in [docs/VERIFY.md](docs/VERIFY.md).
+
+| Test | Result |
 | --- | --- |
-| [AGENTS.md](AGENTS.md) | Stack, layout, and the rules that must not be broken |
-| [docs/CONCURRENCY.md](docs/CONCURRENCY.md) | How double booking is prevented |
-| [docs/SCHEMA.md](docs/SCHEMA.md) | Tables, constraints, and what each guarantees |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module boundaries and request flow |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | Why it is built this way |
-| [docs/VERIFY.md](docs/VERIFY.md) | How to prove a change works |
-| [docs/STATE.md](docs/STATE.md) | Where the last session stopped |
+| 200 threads reach for **one** seat | Exactly **1** winner, 199 clean conflicts |
+| 200 threads across **10** seats | Exactly **10** held, none held twice |
+| Two overlapping multi-seat requests | Exactly one wins, all-or-nothing |
+| Lapsed hold, **sweeper disabled** | Reclaimable anyway |
+| A seat forced into a second booking | Refused by the database |
+
+**Load: 1,000 virtual users against 100 seats.** 75,868 requests at 1,018 req/s,
+median 79 ms, p95 953 ms — and **exactly 100 seats sold**. The test fails itself
+if the ledger is ever oversold.
+
+Tripling the connection pool made throughput *33% worse*. The bottleneck was
+never the pool; it is row-lock contention on 100 rows. Both runs and the
+reasoning are in **[load/RESULTS.md](load/RESULTS.md)**.
+
+Test suite: 3 unit + 15 integration tests against real PostgreSQL via
+Testcontainers. Plus 87 end-to-end API checks across four shell suites.
+
+---
+
+## Architecture
+
+A modular monolith. Not microservices — splitting the booking transaction across
+a network boundary would destroy the single-transaction guarantee the whole
+design rests on.
+
+```mermaid
+flowchart TB
+    subgraph client [Browser]
+        UI[React 19 + Vite<br/>seat map, checkout]
+    end
+
+    subgraph app [Spring Boot 4 modular monolith]
+        direction TB
+        USER[user<br/>accounts, JWT]
+        EVENT[event<br/>events, event_seats<br/>owns SeatAllocationPort]
+        RES[reservation<br/>the concurrency engine]
+        PAY[payment<br/>simulated gateway]
+        BOOK[booking<br/>confirmed sales]
+        NOTIF[notification<br/>WebSocket broadcasts]
+    end
+
+    PG[(PostgreSQL 16<br/>source of truth)]
+    RD[(Redis 7<br/>read cache only)]
+
+    UI -->|REST| app
+    UI <-.->|STOMP over WebSocket| NOTIF
+
+    RES -->|tryHold / release / confirm| EVENT
+    PAY -->|lockForPayment| RES
+    PAY --> BOOK
+    EVENT --> PG
+    RES --> PG
+    PAY --> PG
+    BOOK --> PG
+    EVENT -.->|cache read model| RD
+
+    EVENT -->|SeatStatusChanged<br/>after commit| NOTIF
+```
+
+`reservation` never touches another module's tables. It goes through
+`SeatAllocationPort`, so every mutation of the contended row happens in one
+auditable place.
+
+### Reserving a seat
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant R as ReservationService
+    participant DB as PostgreSQL
+    participant N as Broadcaster
+
+    C->>R: POST /reservations {eventId, seatIds} + Idempotency-Key
+    activate R
+    Note over R,DB: one transaction
+    R->>DB: INSERT reservation
+    R->>DB: UPDATE event_seats ... AND status claimable
+    DB-->>R: rows affected
+
+    alt rows == seats requested
+        R->>DB: COMMIT
+        deactivate R
+        R->>N: SeatStatusChanged (AFTER_COMMIT only)
+        N-->>C: live delta to everyone watching
+        R-->>C: 201 with expiry
+    else rows < seats requested
+        R->>DB: ROLLBACK (all seats, including ones it won)
+        R-->>C: 409 + unavailableSeatIds
+    end
+```
+
+The broadcast fires **only after commit**. Publishing inside the transaction
+would tell every watching browser a seat was gone that then rolled back.
+
+### Seat lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> AVAILABLE
+    AVAILABLE --> RESERVED: atomic conditional UPDATE
+    RESERVED --> AVAILABLE: hold lapses or is released
+    RESERVED --> BOOKED: payment succeeds
+    BOOKED --> [*]: terminal
+```
+
+A lapsed hold is treated as claimable by the hold query itself, so expiry
+correctness never depends on the scheduled sweeper having run.
+
+---
+
+## Running it
+
+Everything, from nothing:
+
+```bash
+cp .env.example .env    # then edit the two secrets
+docker compose up --build
+```
+
+Then open **http://localhost:8088**.
+
+Only the frontend port is published. nginx proxies `/api` and `/ws` to the
+backend on the internal network, so the browser stays same-origin and CORS never
+enters the picture. PostgreSQL and Redis are not reachable from outside.
+
+For development with an IDE, start just the databases and run the two apps
+directly:
+
+```bash
+docker compose -f infra/docker-compose.dev.yml up -d
+cd backend  && ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+cd frontend && npm run dev
+```
+
+Seed a realistic event — a 188-seat hall with holds and sales, all created
+through the public API:
+
+```bash
+bash scripts/seed-demo.sh
+```
+
+---
+
+## API
+
+Interactive reference at **`/docs`** (OpenAPI 3 via springdoc).
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/v1/auth/register` · `/login` · `/refresh` | JWT access + rotating refresh token |
+| `GET` | `/api/v1/events` | Public catalogue |
+| `GET` | `/api/v1/events/{id}/seats` | Seat map. Cached, live-updated |
+| `POST` | `/api/v1/reservations` | Hold seats. `Idempotency-Key` honoured |
+| `DELETE` | `/api/v1/reservations/{id}` | Release early |
+| `POST` | `/api/v1/payments` | Pay for a hold, returns the booking |
+| `GET` | `/api/v1/bookings` | Booking history |
+| `POST` | `/api/v1/admin/venues` · `/admin/events` | Admin only |
+
+Errors are RFC 9457 `application/problem+json` throughout. A seat conflict names
+the seats you lost so the client can grey them out and keep the rest:
+
+```json
+{
+  "type": "https://seatflow.dev/problems/seat-unavailable",
+  "title": "Seat unavailable",
+  "status": 409,
+  "detail": "1 of 2 requested seats are no longer available.",
+  "unavailableSeatIds": ["8e19a22b-..."]
+}
+```
+
+---
+
+## Observability
+
+Actuator is **not proxied through nginx**, so `/actuator/*` is unreachable from
+outside the compose network — a scraper or an operator reaches it on the internal
+network, where everything except the health probes still requires the ADMIN role.
+Logs are ECS JSON under the `docker` profile.
+
+```bash
+docker compose exec backend curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:8080/actuator/prometheus | grep seatflow_
+```
+
+| Metric | What it tells you |
+| --- | --- |
+| `seatflow_reservation_requests_total` | Demand |
+| `seatflow_reservation_conflicts_total` | How much of it is losing seat races |
+| `seatflow_booking_success_total` | Payments that became bookings |
+| `seatflow_booking_failures_total` | Money that did not turn into a seat |
+| `seatflow_reservations_active` | Holds live right now |
+
+A high conflict rate is the system working, not failing. It only matters if it
+stays high when demand is low.
+
+---
+
+## Layout
+
+```
+backend/     Spring Boot, one package per domain module
+frontend/    React 19 + Vite + Tailwind 4
+infra/       databases only, for IDE development
+load/        k6 contention scenario and measured results
+scripts/     end-to-end API verification suites
+docs/        the reasoning
+```
+
+| Document | Answers |
+| --- | --- |
+| [CONCURRENCY.md](docs/CONCURRENCY.md) | How double booking is prevented |
+| [SCHEMA.md](docs/SCHEMA.md) | Tables, constraints, what each guarantees |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module boundaries, request flow |
+| [DECISIONS.md](docs/DECISIONS.md) | Why it is built this way |
+| [VERIFY.md](docs/VERIFY.md) | How to prove a change works |
+| [STATE.md](docs/STATE.md) | Where the last session stopped |
+
+---
+
+## Known limits
+
+Stated plainly, because a portfolio project that pretends to be production-ready
+is less convincing than one that knows what it is.
+
+- **Single instance.** The WebSocket broker is Spring's in-memory one and the
+  per-event sequence counter is a local `AtomicLong`. A second instance would
+  broadcast only to its own clients. The expiry sweeper's advisory lock is
+  written for multi-instance but has never been run that way.
+- **Payment is simulated.** No provider integration. The consistency design
+  around it is real; the charge is not.
+- **No Kafka yet.** Domain events are in-process. Publishing to a broker inside
+  the booking transaction is a dual write, so it needs a transactional outbox —
+  the migration slot is reserved.
+- **Refresh tokens live in `localStorage`.** An httpOnly cookie is the right
+  answer and needs a backend change.
+- **CORS is unconfigured** because nothing has ever needed it — nginx and the
+  Vite proxy both keep the browser same-origin.
