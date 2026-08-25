@@ -18,7 +18,8 @@ com.seatflow
   reservation/   the concurrency engine
   booking/       confirmed bookings
   payment/       simulated payment
-  notification/  WebSocket broadcasts, Kafka producers and consumers
+  notification/  WebSocket broadcasts
+  messaging/     transactional outbox, Kafka relay, published event contract
 ```
 
 Each module has `domain / application / infrastructure / presentation`.
@@ -151,13 +152,67 @@ part 6.
 
 ---
 
-## Kafka (Phase 8)
+## Kafka, through a transactional outbox
 
-Topics: `booking.confirmed`, `reservation.expired`, `payment.completed`.
-Consumers (analytics, notification) live inside the same application initially.
+Topics, all partitioned by the show so one event's history stays ordered:
+`booking.confirmed`, `reservation.expired`, `payment.completed`.
 
-Publishing happens through a **transactional outbox**: the domain event is
-inserted into an `outbox` table in the same transaction as the booking, and a
-relay publishes it afterwards. Publishing to Kafka directly inside the
-transaction is a dual-write, and it will eventually either lose events or emit
-events for transactions that rolled back.
+Nothing publishes to Kafka from inside a business transaction. A module records
+a `DomainEvent`, which is an insert into the `outbox` table joining whatever
+transaction the caller is already in; a relay moves rows to the broker
+afterwards. The reasoning, including why the alternative has no safe ordering,
+is in the Concurrency doc, part 8.
+
+```
+PaymentLedger.settle()        [one transaction]
+  booking + booking_seats
+  event_seats -> BOOKED
+  payment -> SUCCESS
+  outbox: booking.confirmed
+  outbox: payment.completed
+  COMMIT  <- all of it, or none of it
+
+OutboxRelay.drain()           [every 500ms, separate transaction]
+  SELECT ... WHERE published_at IS NULL ORDER BY id
+    FOR UPDATE SKIP LOCKED
+  send to Kafka
+  UPDATE ... SET published_at = now()
+```
+
+`messaging` depends on no other module. Modules depend on `OutboxRecorder` and
+the records in `messaging.contract`, never the other way round, so the direction
+of the dependency matches the direction of the data.
+
+### Why domain events do not carry seat updates
+
+The system pushes two different things outward, and they want opposite delivery
+semantics. It is worth being explicit about, because the tempting simplification
+is to use one mechanism for both.
+
+| | Live seat updates | Domain events |
+| --- | --- | --- |
+| Carried by | STOMP over WebSocket | Kafka |
+| Needs to reach | **every** subscriber watching that seat map | **one** handler, once |
+| If it is lost | the client sees a sequence gap and refetches over REST | the outbox still holds it, and the relay retries |
+| Durability | none, and none needed - the map is refetchable | at-least-once, backed by PostgreSQL |
+
+A confirmation email must be sent once, which is what a Kafka consumer group
+gives: every instance joins group `seatflow`, and the broker hands each message
+to exactly one of them. A seat update is the opposite - it has to reach every
+connected browser, so it must arrive at every instance holding a subscriber.
+
+Today that distinction costs nothing, because there is only one instance. It is
+the thing that has to be solved first to run a second one: the STOMP broker is
+Spring's in-memory one, so a second instance would broadcast only to its own
+clients. Noted in the README's Known limits rather than pretended away.
+
+### Consumers
+
+`BookingNotificationListener` and `SalesAnalyticsListener` run in-process. The
+brief asks for event-driven architecture, not microservices, and splitting the
+booking transaction across a network boundary would destroy the single-commit
+guarantee the whole design rests on. The published contract is what would let
+either consumer move out unchanged.
+
+Delivery is at-least-once, so both check a `messageId` against
+`ProcessedMessages` before acting.

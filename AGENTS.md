@@ -30,14 +30,18 @@ Pinned, because a wrong guess here breaks the build.
 - **PostgreSQL 16** — the single source of truth for booking integrity
 - **Flyway** — all schema changes; `ddl-auto` is `validate`, never `update`
 - **Redis 7** — cache and coordination only, never an arbiter of correctness
-- **Apache Kafka** — asynchronous domain events, still to come (Phase 8)
+- **Apache Kafka 4.1** (`apache/kafka`, KRaft, no ZooKeeper) — asynchronous
+  domain events, published through a transactional outbox. Boot 4 ships
+  `spring-boot-starter-kafka`; the Boot 3 line had you depend on `spring-kafka`
+  directly. Testcontainers uses `org.testcontainers.kafka.KafkaContainer`.
 - **Maven Wrapper** (`mvnw`) — Maven is not installed on this machine and does not need to be
 - **React 19 + Vite 8 + TypeScript + Tailwind 4 + TanStack Query 5 + React Router 7**
   — frontend. Tailwind 4 is CSS-first: tokens live in `@theme` inside
   `src/styles/index.css`, there is no `tailwind.config.js`. No Axios (fetch is
   enough), no Zustand (auth is Context, seat selection is page state), no
   component library.
-- **Testcontainers** — integration tests run against real PostgreSQL
+- **Testcontainers 2.0** — integration tests run against real PostgreSQL, Redis
+  and Kafka. Module artifacts are `testcontainers-<name>` in the 2.x line.
 
 ## Layout
 
@@ -50,7 +54,8 @@ backend/src/main/java/com/seatflow/
   reservation/   the concurrency engine — the heart of the project
   booking/       confirmed bookings
   payment/       simulated payment flow
-  notification/  WebSocket broadcasts, Kafka consumers
+  notification/  WebSocket broadcasts
+  messaging/     transactional outbox, Kafka relay, published event contract
 
 Each module follows domain / application / infrastructure / presentation.
 
@@ -86,7 +91,16 @@ load/                                      k6 scenarios (Phase 9)
    `CacheConfig`, or deserialization failures escape the `CacheErrorHandler`.
 9. **Fixtures go through the API, not the tables.** Faked identifiers have twice
    been rejected by foreign keys added in a later migration.
-10. Match the surrounding code. Do not add dependencies without asking. Run the
+10. **Kafka is never allowed to matter either.** Domain events are recorded to
+    the `outbox` table inside the business transaction and relayed afterwards.
+    Never publish to a broker from inside a transaction - that is a dual write
+    with no safe ordering. `OutboxRecorder` is `Propagation.MANDATORY` to make
+    the mistake fail loudly. Stopping the broker must leave the checkout suite
+    passing; there is a check for this in `docs/VERIFY.md` part 12.
+11. **Consumers must be idempotent.** Delivery is at-least-once. Anything with a
+    side effect that is not naturally repeatable checks `messageId` against
+    `ProcessedMessages` before acting.
+12. Match the surrounding code. Do not add dependencies without asking. Run the
     checks in `docs/VERIFY.md` before reporting work as done.
 
 ## Commit rules

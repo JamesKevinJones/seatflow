@@ -11,10 +11,17 @@ set -euo pipefail
 BASE="${SEATFLOW_BASE_URL:-http://127.0.0.1:8080}"
 ADMIN_EMAIL="${SEATFLOW_ADMIN_EMAIL:-admin@seatflow.local}"
 ADMIN_PASSWORD="${SEATFLOW_ADMIN_PASSWORD:-local-admin-password-change-me}"
+# Python does the JSON parsing. The interpreter is named "python3" on Linux and
+# often only "python" on Windows, so resolve it once rather than assuming: these
+# suites have to run both from Git Bash on the host and from inside WSL against
+# the containerised stack.
+PY_BIN="$(command -v python3 || command -v python)"
+if [ -z "$PY_BIN" ]; then echo "python3 (or python) is required" >&2; exit 1; fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-jget() { cat "$1" | python -c "
+jget() { cat "$1" | "$PY_BIN" -c "
 import sys,json
 d=json.load(sys.stdin); cur=d
 for p in sys.argv[1].split('.'):
@@ -32,7 +39,7 @@ TOKEN=$(jget "$TMP/a" accessToken)
 # one venue of a given name per city.
 VENUE_NAME="Chowdiah Memorial Hall $(date +%H%M%S)"
 echo "creating venue: $VENUE_NAME"
-VENUE_BODY=$(python - "$VENUE_NAME" <<'PYEOF'
+VENUE_BODY=$("$PY_BIN" - "$VENUE_NAME" <<'PYEOF'
 import json, sys
 
 def rows(labels, count):
@@ -59,7 +66,7 @@ VENUE_ID=$(jget "$TMP/v" id)
 echo "  venue $VENUE_ID with $(jget "$TMP/v" totalSeats) seats"
 
 echo "creating event"
-EVENT_BODY=$(python - "$VENUE_ID" <<'PYEOF'
+EVENT_BODY=$("$PY_BIN" - "$VENUE_ID" <<'PYEOF'
 import datetime, json, sys
 start = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=24)
 print(json.dumps({
@@ -101,7 +108,7 @@ for holder in one two; do
   HTOKEN=$(jget "$TMP/h-$holder" accessToken)
 
   # Take up to 8 seats each - the per-reservation cap.
-  SEATS=$(curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | python -c "
+  SEATS=$(curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | "$PY_BIN" -c "
 import sys, json, random
 d = json.load(sys.stdin)
 free = [s['id'] for sec in d['sections'] for s in sec['seats'] if s['status'] == 'AVAILABLE']
@@ -122,7 +129,7 @@ for buyer in three four; do
   curl -s -o "$TMP/b-$buyer" -X POST "$BASE/api/v1/auth/register"     -H 'Content-Type: application/json'     -d "{\"email\":\"$EMAIL\",\"password\":\"correct-horse-battery\",\"fullName\":\"Demo Buyer\"}"
   BTOKEN=$(jget "$TMP/b-$buyer" accessToken)
 
-  SEATS=$(curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | python -c "
+  SEATS=$(curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | "$PY_BIN" -c "
 import sys, json, random
 d = json.load(sys.stdin)
 free = [s['id'] for sec in d['sections'] for s in sec['seats'] if s['status'] == 'AVAILABLE']
@@ -135,7 +142,7 @@ print(json.dumps(free[:8]))
 done
 
 echo "final ledger:"
-curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | python -c "
+curl -s "$BASE/api/v1/events/$EVENT_ID/seats" | "$PY_BIN" -c "
 import sys, json
 a = json.load(sys.stdin)['availability']
 print('  available %d | reserved %d | booked %d | total %d' % (a['available'], a['reserved'], a['booked'], a['total']))

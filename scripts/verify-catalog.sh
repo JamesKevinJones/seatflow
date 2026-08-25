@@ -4,6 +4,13 @@
 BASE="${SEATFLOW_BASE_URL:-http://127.0.0.1:8080}"
 ADMIN_EMAIL="${SEATFLOW_ADMIN_EMAIL:-admin@seatflow.local}"
 ADMIN_PASSWORD="${SEATFLOW_ADMIN_PASSWORD:-local-admin-password-change-me}"
+# Python does the JSON parsing. The interpreter is named "python3" on Linux and
+# often only "python" on Windows, so resolve it once rather than assuming: these
+# suites have to run both from Git Bash on the host and from inside WSL against
+# the containerised stack.
+PY_BIN="$(command -v python3 || command -v python)"
+if [ -z "$PY_BIN" ]; then echo "python3 (or python) is required" >&2; exit 1; fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
@@ -19,7 +26,7 @@ check() {
 }
 
 # jget <file> <dotted.path>
-jget() { cat "$1" | python -c "
+jget() { cat "$1" | "$PY_BIN" -c "
 import sys,json
 try: d=json.load(sys.stdin)
 except Exception: print(''); sys.exit(0)
@@ -92,13 +99,13 @@ CODE=$(curl -s -o "$TMP/badvenue" -w '%{http_code}' -X POST "$BASE/api/v1/admin/
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"","address":"x","city":"y","country":"z","sections":[]}')
 check "POST /admin/venues (empty name + no sections)" 400 "$CODE"
-echo "  errors reported: $(cat "$TMP/badvenue" | python -c "import sys,json;print(len(json.load(sys.stdin).get('errors',[])))" 2>/dev/null)"
+echo "  errors reported: $(cat "$TMP/badvenue" | "$PY_BIN" -c "import sys,json;print(len(json.load(sys.stdin).get('errors',[])))" 2>/dev/null)"
 
 # ------------------------------------------------------------------- event
 hr "6. create event (seats generated from venue)"
-STARTS=$(python -c "import datetime;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-ENDS=$(python -c "import datetime;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=30,hours=3)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
-EVENT_BODY=$(python - "$VENUE_ID" "$STARTS" "$ENDS" <<'PY'
+STARTS=$("$PY_BIN" -c "import datetime;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+ENDS=$("$PY_BIN" -c "import datetime;print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=30,hours=3)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+EVENT_BODY=$("$PY_BIN" - "$VENUE_ID" "$STARTS" "$ENDS" <<'PY'
 import json,sys
 print(json.dumps({
   "venueId": sys.argv[1],
@@ -148,7 +155,7 @@ check "onSale after publish" True "$(jget "$TMP/pub" onSale)"
 hr "10. public catalogue"
 CODE=$(curl -s -o "$TMP/list" -w '%{http_code}' "$BASE/api/v1/events")
 check "GET /events (no auth)" 200 "$CODE"
-echo "  events returned: $(cat "$TMP/list" | python -c "import sys,json;print(len(json.load(sys.stdin).get('content',[])))" 2>/dev/null)"
+echo "  events returned: $(cat "$TMP/list" | "$PY_BIN" -c "import sys,json;print(len(json.load(sys.stdin).get('content',[])))" 2>/dev/null)"
 echo "  first card: $(jget "$TMP/list" content.0.name) | available=$(jget "$TMP/list" content.0.availableSeats) | from=$(jget "$TMP/list" content.0.lowestPriceCents) cents"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/v1/events/$EVENT_ID")
 check "GET /events/{id} after publish" 200 "$CODE"
@@ -157,9 +164,9 @@ hr "11. seat map"
 CODE=$(curl -s -o "$TMP/map" -w '%{http_code}' "$BASE/api/v1/events/$EVENT_ID/seats")
 check "GET /events/{id}/seats (no auth)" 200 "$CODE"
 check "seat map total" 46 "$(jget "$TMP/map" availability.total)"
-SEC_COUNT=$(cat "$TMP/map" | python -c "import sys,json;print(len(json.load(sys.stdin)['sections']))" 2>/dev/null)
+SEC_COUNT=$(cat "$TMP/map" | "$PY_BIN" -c "import sys,json;print(len(json.load(sys.stdin)['sections']))" 2>/dev/null)
 check "sections on the map" 2 "$SEC_COUNT"
-MAPPED=$(cat "$TMP/map" | python -c "import sys,json;d=json.load(sys.stdin);print(sum(len(s['seats']) for s in d['sections']))" 2>/dev/null)
+MAPPED=$(cat "$TMP/map" | "$PY_BIN" -c "import sys,json;d=json.load(sys.stdin);print(sum(len(s['seats']) for s in d['sections']))" 2>/dev/null)
 check "seats across all sections" 46 "$MAPPED"
 echo "  section 1: $(jget "$TMP/map" sections.0.name) | first seat $(jget "$TMP/map" sections.0.seats.0.label) @ $(jget "$TMP/map" sections.0.seats.0.priceCents) cents ($(jget "$TMP/map" sections.0.seats.0.status))"
 echo "  section 2: $(jget "$TMP/map" sections.1.name) | first seat $(jget "$TMP/map" sections.1.seats.0.label) @ $(jget "$TMP/map" sections.1.seats.0.priceCents) cents"

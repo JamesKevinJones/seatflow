@@ -88,9 +88,14 @@ wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw 
 
 WSL keeps a separate `~/.m2`, so the first run re-downloads dependencies.
 
-Current expected output: **3 tests under surefire, 15 under failsafe, 0 failures.**
+Current expected output: **3 tests under surefire, 21 under failsafe, 0 failures.**
 If failsafe reports 0 tests run, the plugin configuration has been lost - treat
 that as a build failure, not a pass.
+
+Per class: `EventSeatGenerationIT` 5, `OutboxIT` 6, `PaymentAndBookingIT` 6,
+`ConcurrentReservationIT` 4. The suite starts PostgreSQL, Redis **and Kafka**
+containers, shared across every test class because they are beans on one
+`@TestConfiguration`.
 
 A single integration test:
 
@@ -143,6 +148,12 @@ Both run against a running app and print a pass/fail table. Both are
 re-runnable: they generate unique emails and venue names per run, because
 `uq_users_email_lower` and `uq_venues_name_city` would otherwise reject a second
 pass.
+
+They run from Git Bash on the host **or** from inside WSL - each script resolves
+`python3` or `python` rather than assuming one. That matters when the WSL2
+localhost relay is not forwarding, which happens: if `curl http://127.0.0.1:8088`
+returns 000 from Windows but 200 from inside WSL, run the suites in WSL with
+`SEATFLOW_BASE_URL` pointing at the same address.
 
 ```bash
 bash scripts/verify-auth.sh
@@ -361,13 +372,79 @@ Expect **401** without a token and **200** with an admin one. Five application
 metrics must be present, and must move after traffic:
 
 ```
-seatflow_reservation_requests_total
-seatflow_reservation_conflicts_total
-seatflow_booking_success_total
-seatflow_booking_failures_total
-seatflow_reservations_active
+seatflow_reservation_requests_total    seatflow_outbox_published_total
+seatflow_reservation_conflicts_total   seatflow_outbox_failures_total
+seatflow_booking_success_total         seatflow_outbox_pending
+seatflow_booking_failures_total        seatflow_notifications_sent_total
+seatflow_reservations_active           seatflow_revenue_cents_total
+                                       seatflow_reservations_expired_total
+                                       seatflow_seats_returned_total
 ```
 
-Last run, after the checkout and reservation suites: 8 requests, 1 conflict,
-2 bookings, 1 failure, 2 active holds - which matches exactly what those suites
-do. A counter registered but never incremented is worse than no counter.
+A counter registered but never incremented is worse than no counter, so check
+the numbers against what the run actually did rather than that the names exist.
+
+Last run, after the checkout suite plus one forced expiry: 7 requests, 4
+bookings, 2 failures, **9 outbox messages published** (4 booking.confirmed + 4
+payment.completed + 1 reservation.expired), 5 outbox failures from the deliberate
+broker outage in part 12, 4 notifications, and 1,080,000 cents of revenue. Four
+bookings and exactly four notifications - the retries during the outage produced
+no duplicate side effects.
+
+---
+
+## 12. Kafka may be killed
+
+The same claim as Redis, one tier further out: **selling a ticket writes database
+rows and nothing else.** Prove it by taking the broker away entirely and running
+the full checkout suite against it.
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose stop kafka"
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && SEATFLOW_BASE_URL=http://127.0.0.1:8088 bash scripts/verify-checkout.sh | tail -5"
+```
+
+Expect **22 of 22 passing** with the broker down. Then confirm the messages are
+owed rather than lost, and that they go out when it returns:
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T postgres psql -U seatflow -d seatflow -c \"SELECT topic, count(*) FILTER (WHERE published_at IS NULL) AS pending, max(attempts) FROM outbox GROUP BY topic;\""
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose start kafka"
+```
+
+Last run: 22 of 22 passed with Kafka stopped, 4 bookings written, **0 seats sold
+twice**, 4 messages pending. After restarting the broker the backlog drained in
+about 9 seconds and `attempts` peaked at 3 - the rows really had been retried and
+really did go out.
+
+If the suite ever fails while Kafka is down, something has put the broker on the
+correctness path and it must come back off.
+
+---
+
+## 13. The outbox reaches Kafka
+
+End to end, on the containerised stack. The payload in the table and the payload
+on the topic must be byte-identical - the relay is supposed to be a byte pipe.
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T postgres psql -U seatflow -d seatflow -tAc \"SELECT payload FROM outbox WHERE topic='booking.confirmed' ORDER BY id DESC LIMIT 1;\""
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server 127.0.0.1:9092 --topic booking.confirmed --from-beginning --max-messages 2 --timeout-ms 15000"
+```
+
+All three topics must exist at startup, created by the `NewTopic` beans:
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list"
+```
+
+Expect `booking.confirmed`, `payment.completed`, `reservation.expired` and
+`__consumer_offsets`.
+
+To exercise `reservation.expired`, force a live hold into the past and wait for
+one sweep - there must actually be an ACTIVE reservation, or the sweeper
+correctly does nothing and the check proves nothing:
+
+```bash
+wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow' && docker compose exec -T postgres psql -U seatflow -d seatflow -c \"UPDATE reservations SET expires_at = now() - interval '1 minute' WHERE status = 'ACTIVE';\""
+```

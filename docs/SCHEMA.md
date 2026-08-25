@@ -26,7 +26,7 @@ payments                                            outbox*
 ```
 
 `*` = beyond the original brief. `refresh_tokens` supports token rotation with
-reuse detection; `outbox` arrives in Phase 8 for transactional Kafka publishing.
+reuse detection; `outbox` carries domain events to Kafka without a dual write.
 
 ---
 
@@ -170,6 +170,44 @@ It is a denormalization. The holder could be derived by joining
 `reservation_seats` is still kept, because it is the historical record of what a
 reservation contained and it holds the price snapshot at hold time. That survives
 after the seat is released and re-reserved by someone else.
+
+---
+
+## outbox
+
+The one table that is not about tickets. It exists so that publishing a domain
+event and committing the change it describes are the same commit - the full
+argument is in the Concurrency doc, part 8.
+
+| Column | Why it is there |
+| --- | --- |
+| `id BIGSERIAL` | Insertion order. The relay reads oldest first, and a monotonic key is what makes that meaningful. |
+| `message_id UUID UNIQUE` | Identity of one emission. Consumers use it to discard the duplicates that at-least-once delivery implies; the unique constraint catches a producer that records the same thing twice. |
+| `message_type`, `aggregate_type`, `aggregate_id` | For humans reading the table. The relay branches on none of them. |
+| `topic`, `partition_key` | Routing, resolved once at record time, so the relay needs no domain knowledge at all. |
+| `payload TEXT` | Already serialized. **Not `JSONB`** - the relay publishes the exact bytes that were committed, and JSONB normalises the value by reordering keys and dropping whitespace. The payload's schema is the consumers' concern, not PostgreSQL's. |
+| `published_at` | NULL means "still owed". This is the entire queue state. |
+| `attempts`, `last_error` | Evidence. A row with rising attempts is a message the broker keeps refusing. |
+
+Two indexes, both partial:
+
+```sql
+CREATE INDEX ix_outbox_unpublished ON outbox (id)           WHERE published_at IS NULL;
+CREATE INDEX ix_outbox_published   ON outbox (published_at) WHERE published_at IS NOT NULL;
+```
+
+The first is the relay's only read path and stays small, because it indexes the
+backlog rather than the history. It is also the reason there is no cursor
+anywhere: sequence values are assigned at INSERT but rows appear at COMMIT, so a
+"last id processed" watermark can step over a row that was numbered earlier and
+committed later. "What is still unpublished" cannot have that bug.
+
+The second exists only for the retention sweep, which deletes published rows
+after a week.
+
+`outbox` has no foreign keys, deliberately. A message is a statement about
+something that happened, and it has to stay readable and sendable even if the
+booking it describes is later deleted.
 
 ---
 

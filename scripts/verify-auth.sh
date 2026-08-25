@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Phase 1 verification. Exercises every auth path against the running app.
 BASE="${SEATFLOW_BASE_URL:-http://127.0.0.1:8080}"
+# Python does the JSON parsing. The interpreter is named "python3" on Linux and
+# often only "python" on Windows, so resolve it once rather than assuming: these
+# suites have to run both from Git Bash on the host and from inside WSL against
+# the containerised stack.
+PY_BIN="$(command -v python3 || command -v python)"
+if [ -z "$PY_BIN" ]; then echo "python3 (or python) is required" >&2; exit 1; fi
+
 TMP="$(mktemp -d)"
 trap "rm -rf $TMP" EXIT
 PASS=0; FAIL=0
@@ -17,7 +24,7 @@ check() {
   fi
 }
 
-jqf() { python -c "
+jqf() { "$PY_BIN" -c "
 import sys,json
 try:
     d=json.load(sys.stdin)
@@ -46,8 +53,8 @@ REG=$(curl -s -o $TMP/reg -w '%{http_code}' -X POST $BASE/api/v1/auth/register \
   -d "{\"email\":\"$EMAIL\",\"password\":\"correct-horse-battery\",\"fullName\":\"Kevin Jones\"}")
 check "POST /register (new account)" 201 "$REG"
 cat $TMP/reg | jqf user.email user.roles.0 tokenType expiresIn
-ACCESS=$(cat $TMP/reg | python -c "import sys,json;print(json.load(sys.stdin)['accessToken'])" 2>/dev/null)
-REFRESH=$(cat $TMP/reg | python -c "import sys,json;print(json.load(sys.stdin)['refreshToken'])" 2>/dev/null)
+ACCESS=$(cat $TMP/reg | "$PY_BIN" -c "import sys,json;print(json.load(sys.stdin)['accessToken'])" 2>/dev/null)
+REFRESH=$(cat $TMP/reg | "$PY_BIN" -c "import sys,json;print(json.load(sys.stdin)['refreshToken'])" 2>/dev/null)
 
 hr "3. duplicate register -> 409"
 DUP=$(curl -s -o $TMP/dup -w '%{http_code}' -X POST $BASE/api/v1/auth/register \
@@ -62,7 +69,7 @@ VAL=$(curl -s -o $TMP/val -w '%{http_code}' -X POST $BASE/api/v1/auth/register \
   -d '{"email":"not-an-email","password":"short","fullName":""}')
 check "POST /register (invalid body)" 400 "$VAL"
 cat $TMP/val | jqf title status errors.0.field errors.0.message
-echo "  field count: $(cat $TMP/val | python -c "import sys,json;print(len(json.load(sys.stdin)['errors']))" 2>/dev/null)"
+echo "  field count: $(cat $TMP/val | "$PY_BIN" -c "import sys,json;print(len(json.load(sys.stdin)['errors']))" 2>/dev/null)"
 
 hr "5. login"
 LOG=$(curl -s -o $TMP/log -w '%{http_code}' -X POST $BASE/api/v1/auth/login \
@@ -82,8 +89,8 @@ UNK=$(curl -s -o $TMP/unk -w '%{http_code}' -X POST $BASE/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"nobody-here@example.com","password":"wrong-password-here"}')
 check "POST /login (unknown email)" 401 "$UNK"
-D1=$(cat $TMP/bad | python -c "import sys,json;print(json.load(sys.stdin)['detail'])" 2>/dev/null)
-D2=$(cat $TMP/unk | python -c "import sys,json;print(json.load(sys.stdin)['detail'])" 2>/dev/null)
+D1=$(cat $TMP/bad | "$PY_BIN" -c "import sys,json;print(json.load(sys.stdin)['detail'])" 2>/dev/null)
+D2=$(cat $TMP/unk | "$PY_BIN" -c "import sys,json;print(json.load(sys.stdin)['detail'])" 2>/dev/null)
 if [ "$D1" = "$D2" ]; then
   printf '  PASS  %-46s (no account enumeration)\n' "wrong-password and unknown-email identical"; PASS=$((PASS+1))
 else
@@ -106,7 +113,7 @@ hr "9. refresh rotates the token"
 REF=$(curl -s -o $TMP/ref -w '%{http_code}' -X POST $BASE/api/v1/auth/refresh \
   -H 'Content-Type: application/json' -d "{\"refreshToken\":\"$REFRESH\"}")
 check "POST /refresh (valid token)" 200 "$REF"
-NEWREFRESH=$(cat $TMP/ref | python -c "import sys,json;print(json.load(sys.stdin)['refreshToken'])" 2>/dev/null)
+NEWREFRESH=$(cat $TMP/ref | "$PY_BIN" -c "import sys,json;print(json.load(sys.stdin)['refreshToken'])" 2>/dev/null)
 if [ -n "$NEWREFRESH" ] && [ "$NEWREFRESH" != "$REFRESH" ]; then
   printf '  PASS  %-46s (rotated)\n' "refresh token changed"; PASS=$((PASS+1))
 else

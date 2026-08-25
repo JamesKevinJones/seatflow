@@ -2,6 +2,8 @@ package com.seatflow.reservation.application;
 
 import com.seatflow.event.application.SeatStatusChanged;
 import com.seatflow.event.infrastructure.EventSeatRepository;
+import com.seatflow.messaging.application.OutboxRecorder;
+import com.seatflow.messaging.contract.ReservationExpired;
 import com.seatflow.reservation.infrastructure.ReservationRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,15 +46,18 @@ public class ReservationExpirySweeper {
     private final ReservationRepository reservationRepository;
     private final EventSeatRepository eventSeatRepository;
     private final ApplicationEventPublisher events;
+    private final OutboxRecorder outbox;
 
     public ReservationExpirySweeper(
             ReservationRepository reservationRepository,
             EventSeatRepository eventSeatRepository,
-            ApplicationEventPublisher events) {
+            ApplicationEventPublisher events,
+            OutboxRecorder outbox) {
 
         this.reservationRepository = reservationRepository;
         this.eventSeatRepository = eventSeatRepository;
         this.events = events;
+        this.outbox = outbox;
     }
 
     /**
@@ -73,6 +78,8 @@ public class ReservationExpirySweeper {
             return;
         }
 
+        Instant now = Instant.now();
+
         // Captured before the update, because afterwards they no longer look
         // lapsed and there would be nothing to name in the broadcast.
         Map<UUID, List<UUID>> lapsedByEvent = new LinkedHashMap<>();
@@ -80,8 +87,26 @@ public class ReservationExpirySweeper {
             lapsedByEvent.computeIfAbsent((UUID) row[0], key -> new ArrayList<>()).add((UUID) row[1]);
         }
 
+        // Read out into plain records now. markLapsedAsExpired clears the
+        // persistence context, so touching these entities afterwards would
+        // either re-query or fail.
+        List<ReservationExpired> expiries = reservationRepository.findLapsedWithSeats(now).stream()
+                .map(reservation -> new ReservationExpired(
+                        UUID.randomUUID(),
+                        now,
+                        reservation.getId(),
+                        reservation.getUserId(),
+                        reservation.getEventId(),
+                        reservation.seatIds(),
+                        reservation.getExpiresAt()))
+                .toList();
+
         int seatsReleased = eventSeatRepository.releaseExpiredHolds();
-        int reservationsExpired = reservationRepository.markLapsedAsExpired(Instant.now());
+        int reservationsExpired = reservationRepository.markLapsedAsExpired(now);
+
+        // Same transaction as the status change that made them true. The relay
+        // publishes them afterwards; if this transaction rolls back, so do they.
+        expiries.forEach(outbox::record);
 
         lapsedByEvent.forEach((eventId, seatIds) ->
                 events.publishEvent(SeatStatusChanged.released(eventId, seatIds)));

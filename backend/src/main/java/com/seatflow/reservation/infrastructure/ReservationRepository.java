@@ -45,6 +45,23 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID> 
     List<Reservation> findByUserIdOrderByCreatedAtDesc(UUID userId);
 
     /**
+     * The lapsed holds themselves, with their seats, before anything is changed.
+     * <p>
+     * The sweeper needs this to describe what expired. It has to run <b>before</b>
+     * {@link #markLapsedAsExpired}, and the values have to be copied out of the
+     * entities rather than read afterwards: that update carries
+     * {@code clearAutomatically = true}, so every entity loaded here is detached
+     * the moment it runs.
+     */
+    @Query("""
+            select distinct r from Reservation r
+              left join fetch r.seats
+             where r.status = com.seatflow.reservation.domain.ReservationStatus.ACTIVE
+               and r.expiresAt < :now
+            """)
+    List<Reservation> findLapsedWithSeats(@Param("now") Instant now);
+
+    /**
      * Marks lapsed holds as EXPIRED. Housekeeping for the sake of accurate
      * status; the seats themselves are freed by
      * {@code EventSeatRepository.releaseExpiredHolds}, and correctness does not

@@ -22,6 +22,21 @@ seatflow:
     sweep-initial-delay-ms: 86400000
     sweep-interval-ms: 86400000
 
+  outbox:
+    # Fast, so a test can wait a beat and find the message on Kafka rather than
+    # sleeping for the production half-second-plus-five-second start-up delay.
+    poll-interval-ms: 200
+    initial-delay-ms: 200
+    # Retention must not run during tests: it would delete the published rows
+    # the assertions are about.
+    retention-initial-delay-ms: 86400000
+    retention-sweep-ms: 86400000
+
+  messaging:
+    # Distinct from production so a developer running both against one broker
+    # does not have the test suite stealing the application's messages.
+    consumer-group: seatflow-test
+
   security:
     jwt:
       # Fixed so token assertions are reproducible across runs.

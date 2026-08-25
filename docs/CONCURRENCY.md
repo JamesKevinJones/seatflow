@@ -210,7 +210,87 @@ inversion is the most defensible property of this design.
 
 ---
 
-## 8. How this gets tested
+## 8. Domain events, and the dual write
+
+Everything above is about one database. This part is about the moment a second
+system enters the picture, because that is where the same class of bug reappears
+wearing different clothes.
+
+A booking has to be announced: a confirmation to send, a revenue figure to
+update, whatever gets added later. The obvious implementation publishes to Kafka
+inside the booking transaction. It has no correct ordering:
+
+```
+send to Kafka, then COMMIT   ->  the commit fails, and consumers have already
+                                 acted on a booking that never happened
+COMMIT, then send to Kafka   ->  the process dies in between, and the event is
+                                 gone with nothing left to say it was owed
+```
+
+Neither is a race that better locking fixes. There are two systems with two
+independent failure modes and no shared commit, so there is no instant at which
+both are known to have succeeded. Retrying the send does not help either: the
+retry itself can be the thing that dies.
+
+**The fix is to stop having two systems in the transaction.** The event is
+written to an ordinary table, `outbox`, in the same transaction as the booking:
+
+```sql
+INSERT INTO outbox (message_id, topic, partition_key, payload, ...) VALUES (...);
+```
+
+One commit, one outcome. If the booking rolls back the message was never
+written, so a rolled-back sale cannot be announced. If the booking commits the
+message committed with it, so a sale cannot go unannounced. A separate relay
+moves rows to Kafka afterwards, and the transaction never waited for a broker.
+
+### What this costs
+
+Delivery becomes **at-least-once**. The relay sends, the broker acknowledges,
+and the relay marks the row published - and it can die between those last two
+steps. On restart the row still reads unpublished, so it goes again. Closing
+that window would require the send and the mark to be atomic across two systems,
+which is exactly the thing that does not exist.
+
+So the duplicate is accepted and pushed to the consumers, which is the right
+place for it. Every message carries a `messageId` assigned once at record time,
+and a consumer with a side effect that is not naturally repeatable checks it
+before acting. Revenue is the sharp case: adding the same payment twice inflates
+a number with nothing anywhere to indicate it happened.
+
+### Why the relay tracks no cursor
+
+The relay asks `WHERE published_at IS NULL ORDER BY id`, never "everything after
+the last id I saw". The watermark version looks obviously better and is quietly
+broken: ids come from a sequence and are handed out at INSERT, but rows become
+visible at COMMIT. A transaction can take id 100 and commit *after* one that
+took 101, so a relay that had advanced past 101 would step over 100 forever.
+Asking what is still unpublished cannot have that bug, whatever order things
+commit in.
+
+### Multiple relays
+
+The claim is `SELECT ... FOR UPDATE SKIP LOCKED`, so every instance can run a
+relay and each takes a disjoint batch. There is no leader, no advisory lock, and
+no designated node - PostgreSQL partitions the work by construction. This is the
+same tool named as out of scope for seat selection in part 10; it is the right
+tool here, because "any N rows nobody else is working on" is exactly the
+question.
+
+### Kafka is not on the correctness path
+
+The same rule as Redis, for the same reason. Selling a seat writes database rows
+and nothing else. Stop the broker entirely and reservations, payments, bookings
+and expiry all keep working; the outbox backlog grows and drains when it returns.
+
+Measured, not assumed: with the broker stopped, the full checkout suite passes
+22 of 22, four bookings complete, and no seat is sold twice. On restart the
+backlog drained in about nine seconds, with `attempts` reaching 3 on the rows
+that had been retried.
+
+---
+
+## 9. How this gets tested
 
 **Testcontainers with real PostgreSQL. Never H2.** H2 does not reproduce the
 row-lock-and-re-check semantics described in part 3, so an H2 concurrency test
@@ -228,16 +308,20 @@ hold locks and mask the very behaviour under test.
 
 ---
 
-## 9. Related but out of scope for v1
+## 10. Related but out of scope for v1
 
-`SELECT ... FOR UPDATE SKIP LOCKED` is the right tool for "give me any N seats"
-(general admission, or best-available assignment). It is not used for the
-pick-your-own-seat flow this project implements, but it is the natural extension
-if best-available is added later.
+`SELECT ... FOR UPDATE SKIP LOCKED` is the right tool for "give me any N of
+these that nobody else is working on". It is not used for the pick-your-own-seat
+flow, where the customer names the row and the answer has to be about that row -
+skipping a locked seat would silently hand them a different one. It is the
+natural extension if general admission or best-available assignment is added.
+
+It *is* used, in this codebase, by the outbox relay (part 8), where "any N rows
+nobody else has claimed" is precisely the question being asked.
 
 ---
 
-## 10. Where this lives, as implemented
+## 11. Where this lives, as implemented
 
 | Concept | File |
 | --- | --- |
@@ -248,6 +332,10 @@ if best-available is added later.
 | Lazy expiry | the second branch of the `tryHold` predicate |
 | Sweeper, under advisory lock | `reservation/application/ReservationExpirySweeper` |
 | The proof | `reservation/ConcurrentReservationIT` |
+| Outbox write, atomic with the booking | `messaging/application/OutboxRecorder` (`Propagation.MANDATORY`) |
+| Relay, claiming with SKIP LOCKED | `messaging/infrastructure/OutboxRelay` |
+| Duplicate suppression | `messaging/consumer/ProcessedMessages` |
+| The outbox proof | `messaging/OutboxIT` |
 
 Two details that were decided while building, and are easy to get wrong again:
 

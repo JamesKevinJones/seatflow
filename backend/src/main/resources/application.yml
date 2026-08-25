@@ -40,6 +40,44 @@ spring:
       port: ${SEATFLOW_REDIS_PORT:6379}
       timeout: 2s
 
+  kafka:
+    bootstrap-servers: ${SEATFLOW_KAFKA_BOOTSTRAP:127.0.0.1:9092}
+
+    producer:
+      # Serializers are String on both sides throughout. The outbox already
+      # holds serialized JSON, so the relay hands over the bytes it read and
+      # nothing re-encodes anything in between.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        # The relay holds row locks across the send, so every one of these must
+        # fail fast. The defaults do the opposite: max.block.ms is 60s, which
+        # would leave a batch of rows locked for a minute the first time the
+        # broker is unreachable, and delivery.timeout.ms is 120s. Fail in ten
+        # seconds, leave the rows unpublished, and try again on the next tick.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+        linger.ms: 5
+        enable.idempotence: true
+
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # One group for the whole cluster, so each message is handled by exactly
+      # one instance. Three instances must not send three confirmation emails.
+      group-id: ${SEATFLOW_CONSUMER_GROUP:seatflow}
+      # A group with no committed offset reads from the start of the topic
+      # rather than skipping everything published before it first connected.
+      auto-offset-reset: earliest
+
+    listener:
+      # A missing topic must not stop the application. The topics are declared
+      # as beans and created at startup, but a broker that is slow or absent
+      # cannot be allowed to take the ticket platform down with it.
+      missing-topics-fatal: false
+
   threads:
     virtual:
       enabled: true
@@ -81,6 +119,22 @@ seatflow:
     # makes reservations correct - the hold query already ignores lapsed holds.
     sweep-interval-ms: ${SEATFLOW_SWEEP_INTERVAL_MS:10000}
     sweep-initial-delay-ms: ${SEATFLOW_SWEEP_INITIAL_DELAY_MS:15000}
+
+  outbox:
+    # The relay that moves committed messages to Kafka. Turning this off stops
+    # publishing; it does not stop recording, so nothing is lost while it is off
+    # and the backlog drains when it comes back.
+    enabled: ${SEATFLOW_OUTBOX_ENABLED:true}
+    poll-interval-ms: ${SEATFLOW_OUTBOX_POLL_MS:500}
+    initial-delay-ms: ${SEATFLOW_OUTBOX_INITIAL_DELAY_MS:5000}
+    # Bounded because the batch is locked, and sent, inside one transaction.
+    batch-size: ${SEATFLOW_OUTBOX_BATCH:128}
+    send-timeout-ms: ${SEATFLOW_OUTBOX_SEND_TIMEOUT_MS:10000}
+    # Published rows are kept a week as evidence, then swept hourly.
+    retention-hours: ${SEATFLOW_OUTBOX_RETENTION_HOURS:168}
+
+  messaging:
+    consumer-group: ${SEATFLOW_CONSUMER_GROUP:seatflow}
 
   # Bootstrap administrator. Registration only ever grants USER, so without this
   # a fresh database has no way to reach an admin endpoint. Creates the account

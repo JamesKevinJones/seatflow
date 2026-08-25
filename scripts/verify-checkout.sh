@@ -3,6 +3,13 @@
 BASE="${SEATFLOW_BASE_URL:-http://127.0.0.1:8080}"
 ADMIN_EMAIL="${SEATFLOW_ADMIN_EMAIL:-admin@seatflow.local}"
 ADMIN_PASSWORD="${SEATFLOW_ADMIN_PASSWORD:-local-admin-password-change-me}"
+# Python does the JSON parsing. The interpreter is named "python3" on Linux and
+# often only "python" on Windows, so resolve it once rather than assuming: these
+# suites have to run both from Git Bash on the host and from inside WSL against
+# the containerised stack.
+PY_BIN="$(command -v python3 || command -v python)"
+if [ -z "$PY_BIN" ]; then echo "python3 (or python) is required" >&2; exit 1; fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
@@ -16,7 +23,7 @@ same() {
   if [ "$2" = "$3" ] && [ -n "$2" ]; then printf '  PASS  %-50s (%s)\n' "$1" "$2"; PASS=$((PASS+1))
   else printf '  FAIL  %-50s "%s" vs "%s"\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi
 }
-jget() { cat "$1" | python -c "
+jget() { cat "$1" | "$PY_BIN" -c "
 import sys,json
 try: d=json.load(sys.stdin)
 except Exception: print(''); sys.exit(0)
@@ -44,7 +51,7 @@ curl -s -o "$TMP/a" -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: applicat
 ADMIN=$(jget "$TMP/a" accessToken)
 [ -n "$ADMIN" ] || { echo "admin login failed"; exit 1; }
 
-VENUE_BODY=$(python - "Checkout Hall $(date +%s%N)" <<'PYEOF'
+VENUE_BODY=$("$PY_BIN" - "Checkout Hall $(date +%s%N)" <<'PYEOF'
 import json, sys
 print(json.dumps({"name": sys.argv[1], "address": "1 Test St", "city": "Bengaluru",
                   "country": "India", "timezone": "Asia/Kolkata",
@@ -54,7 +61,7 @@ PYEOF
 )
 curl -s -o "$TMP/v" -X POST "$BASE/api/v1/admin/venues" -H "Authorization: Bearer $ADMIN" \
   -H 'Content-Type: application/json' -d "$VENUE_BODY"
-EVENT_BODY=$(python - "$(jget "$TMP/v" id)" <<'PYEOF'
+EVENT_BODY=$("$PY_BIN" - "$(jget "$TMP/v" id)" <<'PYEOF'
 import datetime, json, sys
 s = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=11)
 print(json.dumps({"venueId": sys.argv[1], "name": "Checkout Test " + s.strftime('%H%M%S%f'),
@@ -87,7 +94,7 @@ check "POST /payments" 201 "$CODE"
 B1=$(jget "$TMP/b1" id)
 REF1=$(jget "$TMP/b1" bookingReference)
 check "total charged" 360000 "$(jget "$TMP/b1" totalCents)"
-check "seats on the booking" 2 "$(cat "$TMP/b1" | python -c "import sys,json;print(len(json.load(sys.stdin)['seats']))")"
+check "seats on the booking" 2 "$(cat "$TMP/b1" | "$PY_BIN" -c "import sys,json;print(len(json.load(sys.stdin)['seats']))")"
 echo "  reference $REF1, seat labels: $(jget "$TMP/b1" seats.0.label) $(jget "$TMP/b1" seats.1.label)"
 
 hr "2. those seats are now sold, not held"
@@ -130,7 +137,7 @@ check "now 3 seats sold" 3 "$(jget "$TMP/map5" availability.booked)"
 hr "6. booking history"
 CODE=$(curl -s -o "$TMP/mine" -w '%{http_code}' "$BASE/api/v1/bookings" -H "Authorization: Bearer $ALICE")
 check "GET /bookings" 200 "$CODE"
-check "alice has one booking" 1 "$(cat "$TMP/mine" | python -c "import sys,json;print(len(json.load(sys.stdin)))")"
+check "alice has one booking" 1 "$(cat "$TMP/mine" | "$PY_BIN" -c "import sys,json;print(len(json.load(sys.stdin)))")"
 same "and it is hers" "$REF1" "$(jget "$TMP/mine" 0.bookingReference)"
 
 hr "7. a booking is private to its owner"

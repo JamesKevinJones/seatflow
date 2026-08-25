@@ -6,6 +6,9 @@ import com.seatflow.common.exception.ApiException;
 import com.seatflow.common.exception.ErrorCode;
 import com.seatflow.event.application.SeatAllocationPort;
 import com.seatflow.event.application.SeatStatusChanged;
+import com.seatflow.messaging.application.OutboxRecorder;
+import com.seatflow.messaging.contract.BookingConfirmed;
+import com.seatflow.messaging.contract.PaymentCompleted;
 import com.seatflow.payment.domain.Payment;
 import com.seatflow.payment.infrastructure.PaymentRepository;
 import com.seatflow.reservation.application.ReservationHoldPort;
@@ -18,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -57,19 +61,22 @@ public class PaymentLedger {
     private final ReservationHoldPort reservationHold;
     private final SeatAllocationPort seatAllocation;
     private final ApplicationEventPublisher events;
+    private final OutboxRecorder outbox;
 
     public PaymentLedger(
             PaymentRepository paymentRepository,
             BookingRepository bookingRepository,
             ReservationHoldPort reservationHold,
             SeatAllocationPort seatAllocation,
-            ApplicationEventPublisher events) {
+            ApplicationEventPublisher events,
+            OutboxRecorder outbox) {
 
         this.paymentRepository = paymentRepository;
         this.bookingRepository = bookingRepository;
         this.reservationHold = reservationHold;
         this.seatAllocation = seatAllocation;
         this.events = events;
+        this.outbox = outbox;
     }
 
     /** An existing booking for this reservation, if it was already paid for. */
@@ -178,11 +185,41 @@ public class PaymentLedger {
         paymentRepository.save(payment);
         reservationHold.markCompleted(hold.reservationId());
 
+        /*
+         * The outbox rows go in here, inside this transaction, on purpose.
+         *
+         * Publishing to Kafka at this point instead would be a dual write with
+         * no safe ordering: send first and a failed COMMIT tells the world about
+         * a booking that never existed; commit first and a crash on the next
+         * line loses the event with nothing left to say it was owed. Writing a
+         * row means the message and the booking share one commit, and the relay
+         * picks it up afterwards. If anything below this line throws, both
+         * disappear together - which is the correct outcome, because there was
+         * no sale.
+         */
+        List<UUID> seatIds = hold.seats().stream()
+                .map(ReservationHoldPort.SeatLine::eventSeatId)
+                .toList();
+
+        List<String> seatLabels = seatAllocation.describe(seatIds).stream()
+                .map(SeatAllocationPort.SeatDetail::label)
+                .toList();
+
+        Instant soldAt = Instant.now();
+        outbox.record(new BookingConfirmed(
+                UUID.randomUUID(), soldAt,
+                booking.getId(), booking.getBookingReference(), hold.reservationId(), paymentId,
+                hold.userId(), hold.eventId(), seatLabels, hold.totalCents(), booking.getCurrency()));
+
+        outbox.record(new PaymentCompleted(
+                UUID.randomUUID(), soldAt,
+                paymentId, hold.reservationId(), booking.getId(), hold.userId(), hold.eventId(),
+                payment.getAmountCents(), booking.getCurrency(), providerReference));
+
         log.info("Booking {} confirmed for reservation {}: {} seat(s), {} cents",
                 booking.getBookingReference(), hold.reservationId(), confirmed, hold.totalCents());
 
-        events.publishEvent(SeatStatusChanged.booked(
-                hold.eventId(), hold.seats().stream().map(ReservationHoldPort.SeatLine::eventSeatId).toList()));
+        events.publishEvent(SeatStatusChanged.booked(hold.eventId(), seatIds));
         return booking;
     }
 

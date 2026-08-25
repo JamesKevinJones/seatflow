@@ -4,6 +4,13 @@
 BASE="${SEATFLOW_BASE_URL:-http://127.0.0.1:8080}"
 ADMIN_EMAIL="${SEATFLOW_ADMIN_EMAIL:-admin@seatflow.local}"
 ADMIN_PASSWORD="${SEATFLOW_ADMIN_PASSWORD:-local-admin-password-change-me}"
+# Python does the JSON parsing. The interpreter is named "python3" on Linux and
+# often only "python" on Windows, so resolve it once rather than assuming: these
+# suites have to run both from Git Bash on the host and from inside WSL against
+# the containerised stack.
+PY_BIN="$(command -v python3 || command -v python)"
+if [ -z "$PY_BIN" ]; then echo "python3 (or python) is required" >&2; exit 1; fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0
@@ -17,7 +24,7 @@ same() {
   if [ "$2" = "$3" ] && [ -n "$2" ]; then printf '  PASS  %-50s (%s)\n' "$1" "$2"; PASS=$((PASS+1))
   else printf '  FAIL  %-50s "%s" vs "%s"\n' "$1" "$2" "$3"; FAIL=$((FAIL+1)); fi
 }
-jget() { cat "$1" | python -c "
+jget() { cat "$1" | "$PY_BIN" -c "
 import sys,json
 try: d=json.load(sys.stdin)
 except Exception: print(''); sys.exit(0)
@@ -45,7 +52,7 @@ curl -s -o "$TMP/a" -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: applicat
 ADMIN=$(jget "$TMP/a" accessToken)
 [ -n "$ADMIN" ] || { echo "admin login failed"; exit 1; }
 
-VENUE_BODY=$(python - "Hold Test Hall $(date +%s)" <<'PYEOF'
+VENUE_BODY=$("$PY_BIN" - "Hold Test Hall $(date +%s)" <<'PYEOF'
 import json, sys
 print(json.dumps({
   "name": sys.argv[1], "address": "1 Test St", "city": "Bengaluru", "country": "India",
@@ -58,7 +65,7 @@ curl -s -o "$TMP/v" -X POST "$BASE/api/v1/admin/venues" -H "Authorization: Beare
   -H 'Content-Type: application/json' -d "$VENUE_BODY"
 VENUE_ID=$(jget "$TMP/v" id)
 
-EVENT_BODY=$(python - "$VENUE_ID" <<'PYEOF'
+EVENT_BODY=$("$PY_BIN" - "$VENUE_ID" <<'PYEOF'
 import datetime, json, sys
 s = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=12)
 print(json.dumps({
@@ -108,7 +115,7 @@ CODE=$(curl -s -o "$TMP/conflict" -w '%{http_code}' -X POST "$BASE/api/v1/reserv
   -d "{\"eventId\":\"$EVENT_ID\",\"seatIds\":[\"$SEAT2\",\"$SEAT3\"]}")
 check "POST /reservations (overlapping seat)" 409 "$CODE"
 check "problem type" "https://seatflow.dev/problems/seat-unavailable" "$(jget "$TMP/conflict" type)"
-UNAVAIL=$(cat "$TMP/conflict" | python -c "import sys,json;print(len(json.load(sys.stdin).get('unavailableSeatIds',[])))" 2>/dev/null)
+UNAVAIL=$(cat "$TMP/conflict" | "$PY_BIN" -c "import sys,json;print(len(json.load(sys.stdin).get('unavailableSeatIds',[])))" 2>/dev/null)
 check "conflict names exactly one lost seat" 1 "$UNAVAIL"
 same "and it is the seat alice holds" "$SEAT2" "$(jget "$TMP/conflict" unavailableSeatIds.0)"
 echo "  detail: $(jget "$TMP/conflict" detail)"

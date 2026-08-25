@@ -5,6 +5,137 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-25 - Domain events go through an outbox table, never straight to Kafka
+
+**Context.** Phase 8 needs `booking.confirmed`, `reservation.expired` and
+`payment.completed` on Kafka. The obvious implementation publishes from inside
+`PaymentLedger.settle`.
+
+**Decision.** The event is inserted into an `outbox` table in the same
+transaction as the booking. A relay polls the table and publishes afterwards.
+
+**Why not the alternative.** Publishing inside the transaction is a dual write
+and has no safe ordering. Send first and a failed commit has told the world about
+a booking that never happened; commit first and a crash loses the event with
+nothing left to say it was owed. This is not a race that better locking fixes -
+it is two systems with two failure modes and no shared commit.
+
+**Consequences.** Delivery is at-least-once, not exactly-once: the relay can die
+between a successful send and marking the row published. Consumers carry a
+`messageId` and check it before acting. Publishing is no longer synchronous with
+the sale, which is the point - Kafka can be down and tickets still sell.
+
+---
+
+## 2026-08-25 - OutboxRecorder uses Propagation.MANDATORY
+
+**Context.** The outbox only works if the insert is in the caller's transaction.
+With default propagation, calling it from a non-transactional method silently
+opens its own and commits immediately.
+
+**Decision.** `@Transactional(propagation = Propagation.MANDATORY)`.
+
+**Why not the alternative.** That silent case is the dual write again, restored
+by accident and invisible in review - the code still says `outbox.record(...)`
+and still looks correct. MANDATORY turns it into an exception on the first call.
+
+**Consequences.** Recording from outside a transaction throws
+`IllegalTransactionStateException`. There is a test that asserts exactly this,
+because the guarantee is otherwise unobservable.
+
+---
+
+## 2026-08-25 - The relay claims with SKIP LOCKED and keeps no cursor
+
+**Context.** A relay needs to pick up unpublished rows without two instances
+sending the same one twice.
+
+**Decision.** `SELECT ... WHERE published_at IS NULL ORDER BY id LIMIT n FOR
+UPDATE SKIP LOCKED`. No high-water mark, no leader election, no advisory lock.
+
+**Why not the alternative.** A "last id I processed" watermark is the obvious
+design and is quietly wrong: ids are assigned at INSERT but rows become visible
+at COMMIT, so a transaction can take id 100 and commit after one that took 101.
+A relay past 101 would step over 100 permanently. Asking what is unpublished is
+immune to commit order. SKIP LOCKED then lets every instance run a relay and take
+a disjoint batch, which is what makes this multi-instance-ready with no
+coordination.
+
+**Consequences.** The batch is locked for the duration of the Kafka round trip,
+so the producer timeouts are tuned down hard - `max.block.ms` 5s rather than the
+60s default, `delivery.timeout.ms` 10s rather than 120s. An unreachable broker
+must not hold rows locked for a minute.
+
+---
+
+## 2026-08-25 - The payload column is TEXT, not JSONB
+
+**Decision.** `outbox.payload` is `TEXT` holding already-serialized JSON.
+
+**Why not the alternative.** JSONB validates and would allow querying, but it
+normalises: keys are reordered and insignificant whitespace dropped. The relay's
+job is to publish exactly the bytes that were committed, and with JSONB what
+reached Kafka would not be byte-identical to what was recorded. The relay never
+parses the payload, so the schema is the consumers' concern.
+
+**Consequences.** A malformed payload is caught by the consumer rather than the
+database. Acceptable, because the only writer is `OutboxRecorder` serializing a
+sealed record type.
+
+---
+
+## 2026-08-25 - Kafka consumer groups for domain events, not broadcast
+
+**Context.** Both the live seat feed and the domain events fan work out, and it
+is tempting to carry both the same way.
+
+**Decision.** Domain events go to Kafka with every instance in one consumer
+group, so each message is handled exactly once across the cluster. Seat updates
+stay separate.
+
+**Why not the alternative.** They need opposite semantics. A confirmation email
+must be sent once no matter how many instances are running; a seat update must
+reach every instance, because each holds its own WebSocket subscribers. One
+mechanism for both is wrong in whichever direction it is chosen.
+
+**Consequences.** The test profile uses a different group (`seatflow-test`) so a
+developer running the suite against a shared broker does not steal the
+application's messages.
+
+---
+
+## 2026-08-25 - The Kafka container has no volume
+
+**Decision.** The broker in `docker-compose.yml` stores its log in the container.
+
+**Why not the alternative.** A named volume is the more production-shaped answer
+and would survive a restart. It also needs the log dir permissions right for the
+image's non-root user, which is a rabbit hole for a demonstration stack.
+
+**Consequences.** Restarting the broker loses its log, which means messages
+already marked published are not re-delivered. Stated in the README's Known
+limits rather than hidden. The durable record of what happened is the outbox
+table; the broker is transport.
+
+---
+
+## 2026-08-25 - Verification scripts resolve python3 or python
+
+**Context.** The shell suites hardcoded `python`. That exists in Git Bash on
+Windows and not in WSL Ubuntu, where the interpreter is `python3`.
+
+**Decision.** Each script resolves `command -v python3 || command -v python` once.
+
+**Why not the alternative.** Rewriting the JSON handling in `jq` would be a
+larger change to five working scripts for no gain. The real problem was assuming
+one environment.
+
+**Consequences.** The suites now run both from the host and from inside WSL. That
+mattered immediately: the WSL2 localhost relay was not forwarding, so the only
+way to reach the containerised stack was from inside WSL.
+
+---
+
 ## 2026-08-25 - Only the frontend port is published
 
 **Context.** The compose stack has four services. The obvious setup publishes

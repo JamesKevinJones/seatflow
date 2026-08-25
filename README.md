@@ -4,7 +4,7 @@ A high-concurrency event ticket reservation platform. Browse events, pick seats
 from a map that updates live as other people take them, hold your seats against
 a countdown, pay, and get a booking reference.
 
-**Java 21 · Spring Boot 4 · PostgreSQL 16 · Redis 7 · React 19 · Docker**
+**Java 21 · Spring Boot 4 · PostgreSQL 16 · Redis 7 · Apache Kafka · React 19 · Docker**
 
 ---
 
@@ -13,9 +13,10 @@ a countdown, pay, and get a booking reference.
 When 1,000 people reach for 100 seats at the same instant, exactly one person
 gets each seat, and the database never ends up inconsistent.
 
-That is the whole project. Redis, WebSockets, and the rest make it a real
+That is the whole project. Redis, Kafka, WebSockets, and the rest make it a real
 product, but they are deliberately kept **out of the correctness path** —
-PostgreSQL alone decides who owns a seat.
+PostgreSQL alone decides who owns a seat. Both of those claims are tested by
+turning the service off and running the full suite against it.
 
 ### The race
 
@@ -85,6 +86,8 @@ Every number here was measured. Commands are in [docs/VERIFY.md](docs/VERIFY.md)
 | Two overlapping multi-seat requests | Exactly one wins, all-or-nothing |
 | Lapsed hold, **sweeper disabled** | Reclaimable anyway |
 | A seat forced into a second booking | Refused by the database |
+| Full checkout suite with **Kafka stopped** | 22/22 pass, 4 bookings, 0 sold twice |
+| Full seat map with **Redis stopped** | Still 200, just slower |
 
 **Load: 1,000 virtual users against 100 seats.** 75,868 requests at 1,018 req/s,
 median 79 ms, p95 953 ms — and **exactly 100 seats sold**. The test fails itself
@@ -94,8 +97,8 @@ Tripling the connection pool made throughput *33% worse*. The bottleneck was
 never the pool; it is row-lock contention on 100 rows. Both runs and the
 reasoning are in **[load/RESULTS.md](load/RESULTS.md)**.
 
-Test suite: 3 unit + 15 integration tests against real PostgreSQL via
-Testcontainers. Plus 87 end-to-end API checks across four shell suites.
+Test suite: 3 unit + 21 integration tests against real PostgreSQL, Redis and
+Kafka via Testcontainers. Plus 87 end-to-end API checks across four shell suites.
 
 ---
 
@@ -119,10 +122,12 @@ flowchart TB
         PAY[payment<br/>simulated gateway]
         BOOK[booking<br/>confirmed sales]
         NOTIF[notification<br/>WebSocket broadcasts]
+        MSG[messaging<br/>outbox + relay]
     end
 
     PG[(PostgreSQL 16<br/>source of truth)]
     RD[(Redis 7<br/>read cache only)]
+    KF[[Apache Kafka<br/>domain events]]
 
     UI -->|REST| app
     UI <-.->|STOMP over WebSocket| NOTIF
@@ -137,6 +142,11 @@ flowchart TB
     EVENT -.->|cache read model| RD
 
     EVENT -->|SeatStatusChanged<br/>after commit| NOTIF
+
+    PAY -->|records in the same transaction| MSG
+    MSG --> PG
+    MSG -.->|relay, after commit| KF
+    KF -.->|in-process consumers| MSG
 ```
 
 `reservation` never touches another module's tables. It goes through
@@ -272,9 +282,52 @@ docker compose exec backend curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
 | `seatflow_booking_success_total` | Payments that became bookings |
 | `seatflow_booking_failures_total` | Money that did not turn into a seat |
 | `seatflow_reservations_active` | Holds live right now |
+| `seatflow_outbox_pending` | Domain events committed but not yet on Kafka |
+| `seatflow_outbox_published_total` | Messages the broker acknowledged |
+| `seatflow_outbox_failures_total` | Send attempts it did not |
+| `seatflow_notifications_sent_total` | Confirmations dispatched by a consumer |
+| `seatflow_revenue_cents_total` | Settled payment value, from the topic |
 
 A high conflict rate is the system working, not failing. It only matters if it
 stays high when demand is low.
+
+`seatflow_outbox_pending` is the one worth an alert. It sits near zero and spikes
+briefly under load; a value that climbs and stays up means the relay has stopped
+draining, and neither counter can tell you that on its own — a stopped relay
+increments neither.
+
+---
+
+## Domain events
+
+Three topics, published through a **transactional outbox** so a booking and the
+announcement of it share one commit:
+
+| Topic | Emitted when | Consumed by |
+| --- | --- | --- |
+| `booking.confirmed` | a payment settles into a booking | confirmation dispatch |
+| `payment.completed` | the same commit, separate fact | revenue analytics |
+| `reservation.expired` | the sweeper marks a lapsed hold | inventory analytics |
+
+The event is an `INSERT` into the `outbox` table inside the booking transaction;
+a relay polls the table and publishes afterwards. Publishing to Kafka *inside*
+the transaction is a dual write with no safe ordering — send first and a failed
+commit announces a booking that never happened, commit first and a crash loses
+the event silently.
+
+```java
+// PaymentLedger.settle(), inside the transaction
+outbox.record(new BookingConfirmed(...));
+outbox.record(new PaymentCompleted(...));
+// COMMIT: booking, seats, payment and both messages, or none of them
+```
+
+The relay claims work with `FOR UPDATE SKIP LOCKED` and keeps no cursor, so every
+instance can run one and each takes a disjoint batch. Delivery is at-least-once,
+which is the honest consequence rather than an oversight — consumers carry a
+`messageId` and check it before acting.
+
+Full argument: **[docs/CONCURRENCY.md](docs/CONCURRENCY.md)**, part 8.
 
 ---
 
@@ -311,9 +364,14 @@ is less convincing than one that knows what it is.
   written for multi-instance but has never been run that way.
 - **Payment is simulated.** No provider integration. The consistency design
   around it is real; the charge is not.
-- **No Kafka yet.** Domain events are in-process. Publishing to a broker inside
-  the booking transaction is a dual write, so it needs a transactional outbox —
-  the migration slot is reserved.
+- **The Kafka broker has no volume.** One node, no replicas, log stored in the
+  container. Restarting it loses messages already marked published. The durable
+  record of what happened is the `outbox` table; the broker is transport.
+- **Consumer deduplication is in-memory.** `ProcessedMessages` is a bounded,
+  per-instance set. It catches the duplicates that actually occur — a relay that
+  restarted mid-batch — but does not survive a restart and is not shared between
+  instances. The correct version writes the message id inside the consumer's own
+  transaction.
 - **Refresh tokens live in `localStorage`.** An httpOnly cookie is the right
   answer and needs a backend change.
 - **CORS is unconfigured** because nothing has ever needed it — nginx and the
