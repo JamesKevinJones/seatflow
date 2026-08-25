@@ -59,13 +59,16 @@ No phase is outstanding. The honest options, in the order they add value:
    own transaction - the same argument as the outbox, pointed the other way.
 4. **Refresh tokens into an httpOnly cookie.** Currently `localStorage`. Needs a
    backend change and a CSRF story.
-5. **Deploy it somewhere.** The compose stack runs on any container host. This
-   is the largest gap between the project and a link someone can click.
+5. **Finish the deployment.** Everything is prepared; it needs a Render account
+   and the resulting backend URL pasted into `frontend/vercel.json`.
 
 ## Open questions
 
-- **Deployment.** Vercel suits the frontend but cannot host Spring Boot. Free
-  container tiers sleep, which makes a shared link cold-start or fail.
+- **Deployment is prepared but not live.** `render.yaml` (Blueprint) and
+  `frontend/vercel.json` are committed and the Vercel project `seatflow` exists
+  with a validated build. The backend needs a Render account, which is the one
+  step that cannot be done from here. Once the backend URL exists, update the
+  rewrite destination in `frontend/vercel.json` and `vercel deploy --prod`.
 - **Infrastructure is still single-node.** The application scales; one database,
   one Redis, one Kafka broker do not. Adding instances does not address that.
 - **The Kafka container has no volume.** Restarting the broker loses its log, so

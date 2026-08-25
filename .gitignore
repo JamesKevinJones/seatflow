@@ -39,3 +39,6 @@ logs/
 # which is tracked; these are local pointers to it and nothing more.
 CLAUDE.md
 GEMINI.md
+
+# Vercel CLI project link (contains the project and org ids for this machine)
+.vercel/

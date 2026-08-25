@@ -5,6 +5,46 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-08-25 - Deployed split-origin: static frontend, containerised backend
+
+**Context.** A public demonstration link needs a host. The compose stack is four
+services plus a broker; free tiers give one container and no Kafka. Serving the
+built frontend from Spring Boot was the obvious way to get to one service.
+
+**Decision.** Keep the two apart. The frontend is a static bundle on Vercel,
+which rewrites `/api` to the backend so the browser stays same-origin. The
+backend is the existing container on a free tier, with managed PostgreSQL and
+Redis and no broker, under a new `cloud` profile.
+
+**Why not the alternative.** Serving the SPA from Spring means a `/**` resource
+handler and loosening `anyRequest().authenticated()` so static files are public.
+The resource handler is the more dangerous half: it answers unmatched paths with
+`index.html`, so a typo'd API route returns **200 with an HTML body** instead of
+404. This project has already been bitten by exactly that twice through nginx -
+once losing time to a false failure, once to a check that passed for the wrong
+reason. Rebuilding the trap inside the application, in exchange for saving one
+static host, is a bad trade.
+
+**Consequences.** A WebSocket cannot be rewritten by a static host, so the seat
+feed addresses the backend directly via `VITE_WS_URL` while `/api` is rewritten.
+That is a genuine cross-origin WebSocket, which `setAllowedOriginPatterns` on
+`WebSocketConfig` already permits - a line written for exactly this case and
+until now unused.
+
+The `cloud` profile turns off the outbox relay and the Kafka listeners, because
+there is no broker. **Recording stays on**: paying still writes
+`booking.confirmed` and `payment.completed` in the booking's transaction, so the
+pattern is intact and the rows are visible - they queue until a broker exists.
+That is the state `docs/VERIFY.md` part 12 measured deliberately, which is what
+makes the reduction safe rather than a hope.
+
+Found while verifying: defining `rewrites` in `vercel.json` replaces the Vite
+preset's SPA fallback, so `/events/<id>/seats` returned **404** on a refresh.
+Caught before the link was public, and fixed with an explicit catch-all that
+excludes `/assets/`.
+
+---
+
 ## 2026-08-25 - The fan-out subscription must not start with the context
 
 **Context.** Adding the cross-instance seat-update fan-out meant registering a

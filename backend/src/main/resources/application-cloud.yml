@@ -1,0 +1,64 @@
+# Free-tier hosting: one instance, managed PostgreSQL, managed Redis, no broker.
+#
+# This is the profile for a public demonstration link, not for production. It is
+# a deliberately reduced deployment, and the reductions are the ones the design
+# already proved it survives - see docs/VERIFY.md parts 9 and 12, where the
+# checkout suite passes with Kafka stopped and with Redis stopped.
+
+server:
+  # Render, Fly, Koyeb and Heroku all assign a port and expect the process to
+  # listen on it. Nothing here may hardcode 8080.
+  port: ${PORT:8080}
+
+spring:
+  datasource:
+    # Assembled from parts rather than taken whole, because managed providers
+    # hand out a postgres:// URL and Spring wants a jdbc:postgresql:// one.
+    url: jdbc:postgresql://${SEATFLOW_DB_HOST}:${SEATFLOW_DB_PORT:5432}/${SEATFLOW_DB_NAME}?sslmode=require
+    username: ${SEATFLOW_DB_USER}
+    password: ${SEATFLOW_DB_PASSWORD}
+    hikari:
+      # Free Postgres tiers cap connections low - often 20 or fewer for the
+      # whole instance. Asking for the local pool of 20 would exhaust it and
+      # fail at boot. This is a demonstration instance, not a load target.
+      maximum-pool-size: ${SEATFLOW_DB_POOL_MAX:5}
+      minimum-idle: 1
+
+  data:
+    redis:
+      # Managed Redis is handed over as a single redis:// or rediss:// URL,
+      # which Spring parses directly. Absent, the app still runs: the cache
+      # misses through to PostgreSQL and the seat feed delivers locally. It
+      # costs about 3s per reservation in timeouts, which is why the demo is
+      # given a Redis rather than left without one.
+      url: ${SEATFLOW_REDIS_URL:redis://127.0.0.1:6379}
+
+  kafka:
+    listener:
+      # No broker on a free tier, so the consumers must not start. Without this
+      # every listener container retries a connection it will never get and
+      # fills the log with it.
+      auto-startup: false
+
+seatflow:
+  outbox:
+    # The relay is off for the same reason: there is nowhere to relay to.
+    #
+    # Recording is **not** off. Paying still writes booking.confirmed and
+    # payment.completed rows in the same transaction as the booking, so the
+    # pattern is intact and visible in the table - the messages simply queue
+    # until a broker exists. That is exactly the behaviour part 12 measured when
+    # the broker was stopped deliberately, and it is the reason this reduction
+    # is safe to make.
+    enabled: false
+
+  reservation:
+    # Shorter than the local default. A demonstration instance that sleeps
+    # between visitors should not come back to a map full of stale holds.
+    sweep-interval-ms: ${SEATFLOW_SWEEP_INTERVAL_MS:30000}
+
+logging:
+  level:
+    com.seatflow: INFO
+    # Plain text, not the ECS JSON of the docker profile: free-tier log viewers
+    # render one line per entry and JSON is unreadable in them.

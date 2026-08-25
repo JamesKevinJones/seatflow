@@ -14,6 +14,29 @@ interface SeatUpdate {
 }
 
 /**
+ * Where the live seat feed lives.
+ *
+ * Same origin by default, which is what both the Vite dev proxy and the nginx
+ * container provide - the browser talks to one host and there is no CORS policy
+ * to get wrong.
+ *
+ * `VITE_WS_URL` exists for the one arrangement where that is not possible: a
+ * frontend on a static host with the backend elsewhere. Static hosts rewrite
+ * HTTP happily and almost none of them proxy a WebSocket upgrade, so the socket
+ * has to address the backend directly while `/api` is still rewritten to it.
+ * That is a genuine cross-origin WebSocket, which is why WebSocketConfig sets
+ * allowed origin patterns.
+ */
+function seatFeedUrl(): string {
+  const configured = import.meta.env.VITE_WS_URL
+  if (configured) {
+    return `${configured.replace(/\/$/, '')}/ws`
+  }
+  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${protocol}://${window.location.host}/ws`
+}
+
+/**
  * Keeps an open seat map in step with everyone else's actions.
  *
  * Deltas are applied straight into the TanStack cache, so a seat someone else
@@ -38,9 +61,8 @@ export function useSeatUpdates(eventId: string): boolean {
 
     lastSeq.current = null
 
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const client = new Client({
-      brokerURL: `${protocol}://${window.location.host}/ws`,
+      brokerURL: seatFeedUrl(),
       reconnectDelay: 3000,
       // Silence the default console logging; failures surface as `connected`.
       debug: () => {},

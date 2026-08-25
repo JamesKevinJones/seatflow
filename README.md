@@ -337,6 +337,38 @@ Full argument: **[docs/CONCURRENCY.md](docs/CONCURRENCY.md)**, part 8.
 
 ---
 
+## Deploying it
+
+The compose stack is the real arrangement. For a public demonstration link it is
+split in two, because free tiers give you one container and no message broker:
+
+| Piece | Where | Notes |
+| --- | --- | --- |
+| Frontend | Vercel (static) | Rewrites `/api` to the backend, so the browser stays same-origin |
+| Backend | Render (Docker, free) | `render.yaml` is a Blueprint — New → Blueprint → this repo |
+| PostgreSQL | Render, managed | Flyway migrates it on first boot |
+| Redis | Render Key Value | Optional; without it a reservation costs ~3s in timeouts |
+| Kafka | **not deployed** | No free broker exists |
+
+The `cloud` profile turns off the outbox relay and the Kafka listeners. It does
+**not** turn off recording — paying still writes `booking.confirmed` and
+`payment.completed` in the booking's own transaction, and the rows queue in the
+table until a broker exists. That is the state part 12 of the verification doc
+measured on purpose, which is why this reduction is safe rather than hopeful.
+
+One deliberate consequence: a static host will rewrite HTTP but not proxy a
+WebSocket upgrade, so the seat feed addresses the backend directly through
+`VITE_WS_URL` while `/api` is rewritten. That makes it a genuine cross-origin
+WebSocket — the case `setAllowedOriginPatterns` on `WebSocketConfig` was written
+for.
+
+**Known limits of the deployed instance**, as opposed to the code: the free web
+service sleeps after 15 minutes and cold-starts in about a minute, free Postgres
+expires after 30 days, and it runs as a single instance. None of that is a
+property of the design; it is what the free tier is.
+
+---
+
 ## Running more than one instance
 
 ```bash
