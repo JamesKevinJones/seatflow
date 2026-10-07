@@ -5,6 +5,28 @@ add a new one that supersedes it and say so.
 
 ---
 
+## 2026-10-07 - Refresh tokens are swept a week after expiry
+
+**Context.** An audit against *Release It!* ("steady state": anything that
+accumulates needs a mechanism that removes it) found that every refresh rotates
+to a new `refresh_tokens` row and nothing ever deleted one.
+`RefreshTokenRepository.deleteExpiredBefore` existed, and the V1 migration's
+comment mentions "the cleanup job", but no caller existed.
+
+**Decision.** `RefreshTokenSweeper` runs hourly behind its own advisory lock and
+deletes tokens that expired more than 7 days ago. The delete skips a token that
+a surviving one names as `replaced_by_id`.
+
+**Why not the alternative.** Deleting on expiry would drop the evidence trail for
+a theft detected by reuse. A week keeps it for investigation and costs a week of
+rows, not an unbounded table. The `NOT EXISTS` guard only matters if the refresh
+TTL is ever shortened: then a successor can expire before its predecessor, and a
+plain delete would trip the self-referencing foreign key and fail every sweep.
+
+**Consequences.** Pinned by `RefreshTokenSweeperIT` (2 tests).
+
+---
+
 ## 2026-08-25 - Deployed split-origin: static frontend, containerised backend
 
 **Context.** A public demonstration link needs a host. The compose stack is four

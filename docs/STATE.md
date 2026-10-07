@@ -7,6 +7,12 @@
 
 ## Where things stand
 
+**2026-10-07, branch `principles-audit` (not pushed):** refresh tokens were never
+deleted (`deleteExpiredBefore` had no caller). `RefreshTokenSweeper` now removes
+them a week after expiry. `./mvnw verify` in WSL: 3 surefire + 29 failsafe, 0
+failures. Next: `/security-review`, push, merge. Uncommitted frontend work on
+`main` in the main checkout belongs to another session; this branch doesn't touch it.
+
 **Every phase of the original brief is done, plus multi-instance support.**
 
 `docker compose up --build` brings up PostgreSQL, Redis, Kafka, the backend and
