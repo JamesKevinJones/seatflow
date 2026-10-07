@@ -88,12 +88,13 @@ wsl -e bash -lc "cd '/mnt/c/Users/kj638/Kevin codes/seatflow/backend' && ./mvnw 
 
 WSL keeps a separate `~/.m2`, so the first run re-downloads dependencies.
 
-Current expected output: **3 tests under surefire, 27 under failsafe, 0 failures.**
+Current expected output: **3 tests under surefire, 29 under failsafe, 0 failures.**
 If failsafe reports 0 tests run, the plugin configuration has been lost - treat
 that as a build failure, not a pass.
 
 Per class: `EventSeatGenerationIT` 5, `OutboxIT` 6, `PaymentAndBookingIT` 6,
-`ConcurrentReservationIT` 4, `MultiInstanceIT` 3, `RedisUnavailableIT` 3.
+`ConcurrentReservationIT` 4, `MultiInstanceIT` 3, `RedisUnavailableIT` 3,
+`RefreshTokenSweeperIT` 2.
 
 `RedisUnavailableIT` is the only class that runs **without** a Redis container -
 it points the application at a closed port to prove it still starts and still
