@@ -7,11 +7,11 @@
 
 ## Where things stand
 
-**2026-10-07, branch `principles-audit` (not pushed):** refresh tokens were never
+**2026-10-07, `principles-audit` merged as PR #1:** refresh tokens were never
 deleted (`deleteExpiredBefore` had no caller). `RefreshTokenSweeper` now removes
 them a week after expiry. `./mvnw verify` in WSL: 3 surefire + 29 failsafe, 0
-failures. Next: `/security-review`, push, merge. Uncommitted frontend work on
-`main` in the main checkout belongs to another session; this branch doesn't touch it.
+failures. Uncommitted frontend work on `main` in the main checkout belongs to
+another session; the merge didn't touch it.
 
 **Every phase of the original brief is done, plus multi-instance support.**
 
