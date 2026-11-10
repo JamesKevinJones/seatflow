@@ -3,7 +3,7 @@
 > Updated at the end of every session, by whichever agent was driving.
 > Keep it under a page. This is a baton, not a diary.
 
-**Last updated:** 2026-08-25 by claude-code
+**Last updated:** 2026-11-10 by Codex
 
 ## Where things stand
 
@@ -46,11 +46,20 @@ Everything below was measured, not assumed:
 
 ## In progress
 
-Nothing half-done.
+The `polish/proof` branch adds test CI for the backend and frontend, a code
+licence, and README verification notes. The 10 Nov local WSL run of
+`bash ./mvnw -B verify` passed 3 unit and 29 integration tests in 3m06s;
+frontend lint and build passed (lint emitted four warnings). No application
+code, schema or local checkout work was changed.
+PR #2 CI then passed on GitHub: backend Testcontainers in 1m58s and frontend
+checks in 16s. The app was not relaunched for a new screenshot in this pass.
 
 ## The exact next step
 
-No phase is outstanding. The honest options, in the order they add value:
+Review PR #2's licence and README wording, then merge if acceptable. The CI
+jobs passed within the three-minute target, but a real current-flow screenshot
+and a public live demo are still absent. After that, the honest product
+options, in the order they add value, are:
 
 1. **Reject known-taken seats before opening a transaction.** The measured
    bottleneck is row-lock contention, so the lever is doing less work per

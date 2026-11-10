@@ -1,5 +1,8 @@
 # SeatFlow
 
+[![CI](https://github.com/JamesKevinJones/seatflow/actions/workflows/ci.yml/badge.svg)](https://github.com/JamesKevinJones/seatflow/actions/workflows/ci.yml)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 A high-concurrency event ticket reservation platform. Browse events, pick seats
 from a map that updates live as other people take them, hold your seats against
 a countdown, pay, and get a booking reference.
@@ -102,9 +105,17 @@ reasoning are in **[load/RESULTS.md](load/RESULTS.md)** — including the note t
 these runs predate Kafka, so the throughput figure is not claimed against the
 current commit.
 
-Test suite: 3 unit + 27 integration tests against real PostgreSQL, Redis and
-Kafka via Testcontainers. Plus 87 end-to-end API checks across four shell suites,
-all passing against a two-instance containerised stack.
+On 10 Nov 2026, `bash ./mvnw -B verify` in WSL against source commit
+`337501b46674` passed 3 unit + 29 integration tests against real PostgreSQL,
+Redis and Kafka via Testcontainers. The 87 end-to-end API checks across four
+shell suites were recorded in the earlier two-instance run in
+[project state](docs/STATE.md); they were not rerun for this README update.
+
+**CI checks:** the backend job runs `bash ./mvnw -B verify` on Java 21 with
+Testcontainers and Docker. The frontend job runs `npm ci`, `npm run lint` and
+`npm run build` on Node 22. See [verification steps](docs/VERIFY.md) to repeat
+the checks locally. The load test above is a separate measured run, not a CI
+job.
 
 ---
 
@@ -453,3 +464,7 @@ is less convincing than one that knows what it is.
   answer and needs a backend change.
 - **CORS is unconfigured** because nothing has ever needed it — nginx and the
   Vite proxy both keep the browser same-origin.
+
+## Licence
+
+The code is available under the [MIT licence](LICENSE).
