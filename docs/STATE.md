@@ -51,13 +51,15 @@ licence, and README verification notes. The 10 Nov local WSL run of
 `bash ./mvnw -B verify` passed 3 unit and 29 integration tests in 3m06s;
 frontend lint and build passed (lint emitted four warnings). No application
 code, schema or local checkout work was changed.
+PR #2 CI then passed on GitHub: backend Testcontainers in 1m58s and frontend
+checks in 16s. The app was not relaunched for a new screenshot in this pass.
 
 ## The exact next step
 
-Run the polish PR's CI and review the licence and README wording. The backend
-job uses Testcontainers on GitHub's Ubuntu runner and may exceed the preferred
-three-minute CI budget on its first dependency download. After that, the
-honest product options, in the order they add value, are:
+Review PR #2's licence and README wording, then merge if acceptable. The CI
+jobs passed within the three-minute target, but a real current-flow screenshot
+and a public live demo are still absent. After that, the honest product
+options, in the order they add value, are:
 
 1. **Reject known-taken seats before opening a transaction.** The measured
    bottleneck is row-lock contention, so the lever is doing less work per
